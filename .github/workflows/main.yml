@@ -26,7 +26,8 @@ jobs:
 
       - name: Run Domain Tests
         run: |
-          # We test the 'Brain' (Domain) to ensure the logic is intact
+          # We set PYTHONPATH to the current directory so tests can find domain.py
+          export PYTHONPATH=$PYTHONPATH:.
           pytest tests/
 
   build-check:
