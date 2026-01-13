@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>RMS Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        const App = () => {
+            const [token, setToken] = useState(localStorage.getItem('token'));
+            const [role, setRole] = useState(localStorage.getItem('role'));
+            const [projects, setProjects] = useState([]);
+            const [error, setError] = useState(null);
+
+            const apiCall = async (endpoint, method = 'GET', body = null) => {
+                setError(null);
+                const headers = { 'Content-Type': 'application/json' };
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+                
+                try {
+                    const resp = await fetch(endpoint, { method, headers, body: body ? JSON.stringify(body) : null });
+                    const data = await resp.json();
+                    if (!resp.ok) throw new Error(data.detail || 'Request failed');
+                    return data;
+                } catch (err) {
+                    setError(err.message);
+                    if (err.message.includes('Unauthorized') || err.message.includes('expired')) logout();
+                    return null;
+                }
+            };
+
+            const login = async (e) => {
+                e.preventDefault();
+                const data = await apiCall('/api/login', 'POST', { email: e.target.email.value });
+                if (data) {
+                    localStorage.setItem('token', data.token);
+                    localStorage.setItem('role', data.role);
+                    setToken(data.token);
+                    setRole(data.role);
+                }
+            };
+
+            const logout = () => {
+                localStorage.clear();
+                setToken(null);
+                setProjects([]);
+            };
+
+            useEffect(() => {
+                if (token) apiCall('/api/projects').then(data => data && setProjects(data));
+            }, [token]);
+
+            if (!token) return (
+                <div className="flex items-center justify-center h-screen">
+                    <form onSubmit={login} className="bg-white p-8 rounded-xl shadow-lg w-96">
+                        <h2 className="text-3xl font-bold mb-6 text-gray-800">RMS Login</h2>
+                        {error && <div className="bg-red-50 text-red-600 p-3 rounded mb-4 text-sm">{error}</div>}
+                        <input name="email" type="email" placeholder="Email (admin@rms.com for admin)" className="w-full p-3 border rounded-lg mb-4" required />
+                        <button className="w-full bg-blue-600 text-white p-3 rounded-lg font-bold">Login</button>
+                    </form>
+                </div>
+            );
+
+            return (
+                <div className="p-8 max-w-4xl mx-auto">
+                    <header className="flex justify-between items-center mb-8 pb-4 border-b">
+                        <h1 className="text-3xl font-black text-gray-900">Research Portal</h1>
+                        <button onClick={logout} className="text-red-500 font-bold hover:underline">Logout ({role})</button>
+                    </header>
+
+                    {error && <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded flex justify-between">
+                        <span>{error}</span>
+                        <button onClick={() => setError(null)} className="font-bold">×</button>
+                    </div>}
+
+                    {role === 'admin' && (
+                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 mb-8">
+                            <h3 className="font-bold mb-4 text-gray-700">Register New Project</h3>
+                            <form onSubmit={async (e) => {
+                                e.preventDefault();
+                                const payload = { title: e.target.title.value, researcher: e.target.res.value };
+                                const res = await apiCall('/api/projects', 'POST', payload);
+                                if (res) {
+                                    setProjects([...projects, res]);
+                                    e.target.reset();
+                                }
+                            }} className="flex gap-4">
+                                <input name="title" placeholder="Title (min 5 chars)" className="flex-1 p-2 border rounded" required />
+                                <input name="res" placeholder="Researcher" className="p-2 border rounded" required />
+                                <button className="bg-blue-600 text-white px-6 rounded font-bold transition">Add</button>
+                            </form>
+                        </div>
+                    )}
+
+                    <div className="space-y-4">
+                        {projects.length === 0 ? (
+                            <div className="text-center py-10 bg-gray-50 rounded-xl border-2 border-dashed border-gray-200">
+                                <p className="text-gray-400">No active research projects found.</p>
+                            </div>
+                        ) : projects.map(p => (
+                            <div key={p.id} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex justify-between items-center">
+                                <div>
+                                    <h4 className="font-bold text-lg text-gray-800">{p.title}</h4>
+                                    <p className="text-gray-500 italic">By: {p.researcher}</p>
+                                </div>
+                                <span className="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-bold uppercase">{p.status}</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
