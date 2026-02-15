@@ -5,8 +5,6 @@ from pydantic import BaseModel, Field
 
 # --- Domain Models ---
 class Project(BaseModel):
-    # Pure Domain Identity (UUID). 
-    # We ignore the database's auto-incrementing integer IDs.
     reference_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     researcher: str
@@ -16,40 +14,23 @@ class User(BaseModel):
     email: str
     role: str
 
-# --- Inbound Ports ---
-class ResearchManagerPort(ABC):
-    @abstractmethod
-    def get_all_projects(self) -> List[Project]:
-        pass
-
-    @abstractmethod
-    def create_project(self, project: Project, user: User) -> Project:
-        pass
-
-class AuthPort(ABC):
-    @abstractmethod
-    def authenticate(self, email: str) -> Dict:
-        pass
-
-    @abstractmethod
-    def authorize(self, token: str) -> Optional[User]:
-        pass
-
-# --- Outbound Ports ---
+# --- The 4 Outbound Ports (The Sockets) ---
 class ProjectDatabasePort(ABC):
     @abstractmethod
-    def save(self, project: Project) -> Project:
-        pass
-
+    def save(self, project: Project) -> Project: pass
     @abstractmethod
-    def fetch_all(self) -> List[Project]:
-        pass
+    def fetch_all(self) -> List[Project]: pass
 
 class TokenProviderPort(ABC):
     @abstractmethod
-    def encode(self, payload: Dict) -> str:
-        pass
-
+    def encode(self, payload: Dict) -> str: pass
     @abstractmethod
-    def decode(self, token: str) -> Optional[Dict]:
-        pass
+    def decode(self, token: str) -> Optional[Dict]: pass
+
+class ResearchApiPort(ABC):
+    @abstractmethod
+    def search_papers(self, query: str) -> List[Dict]: pass
+
+class MessageBrokerPort(ABC):
+    @abstractmethod
+    def publish_event(self, event_type: str, data: Dict) -> None: pass

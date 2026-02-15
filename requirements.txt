@@ -1,8 +1,9 @@
 fastapi
 uvicorn
 sqlalchemy
+psycopg2-binary
 pyjwt
 python-multipart
+httpx
 pytest
 pytest-asyncio
-httpx

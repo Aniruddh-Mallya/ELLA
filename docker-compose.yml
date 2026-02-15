@@ -1,15 +1,10 @@
 version: '3.8'
-
 services:
   rms-api:
     build: .
-    container_name: rms_hexagonal_service
+    container_name: rms_consolidated_service
     ports:
-      - "8000:8000"
-    environment:
-      - JWT_SECRET=super_secret_production_key_123
+      - "8002:8002"
     volumes:
-      # Mounting the 'data' folder ensures SQLite can create its 
-      # database and journal files safely within a persistent directory.
       - ./data:/app/data
     restart: always

@@ -1,0 +1,37 @@
+# ── Terraform ──
+# NEVER commit these — they contain passwords and infrastructure state
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+tfplan
+crash.log
+
+# ── Environment / Secrets ──
+.env
+*.pem
+*.key
+
+# ── Local data ──
+data/research.db
+
+# ── Logs ──
+*.zip
+logs/
+logs2/
+temp-logs-*/
+container-logs.zip
+
+# ── Python ──
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── IDE ──
+.vscode/
+.idea/

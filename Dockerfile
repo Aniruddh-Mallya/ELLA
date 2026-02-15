@@ -1,23 +1,23 @@
-# 1. Use a lightweight Python 3.11 image (The Nana 'Production' standard)
 FROM python:3.11-slim
 
-# 2. Prevent Python from buffering logs (Important for cloud observability)
-ENV PYTHONUNBUFFERED=1
-
-# 3. Set the working directory inside the container
 WORKDIR /app
 
-# 4. Copy requirements first to take advantage of Docker layer caching
-COPY requirements.txt .
+# 1. Install system deps needed by psycopg2-binary
+#    (slim image is missing some libs)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# 5. Install the 'Suppliers' (dependencies)
+# 2. Install Python dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 6. Copy the entire 'Laptop' (source code) into the container
-COPY . .
+# 3. Copy app files
+COPY ports.py domain.py outbound_adapters.py inbound_adapters.py index.html ./
 
-# 7. Expose the port our Motherboard (FastAPI) listens on
+# 4. Create data directory for SQLite fallback
+RUN mkdir -p /app/data
+
+# 5. Port 8000 — Azure WEBSITES_PORT must match this
 EXPOSE 8000
-
-# 8. The command to start the system
-CMD ["python", "entrypoints.py"]
+CMD ["uvicorn", "inbound_adapters:app", "--host", "0.0.0.0", "--port", "8000"]

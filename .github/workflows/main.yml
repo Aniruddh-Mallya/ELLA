@@ -1,4 +1,4 @@
-name: RMS CI/CD Pipeline
+name: RMS 4-Pillar CI/CD Pipeline
 
 on:
   push:
@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+# ─────────────────────────────────────────────────
+# JOB 1: TEST (unchanged from your V2 pipeline)
+# Runs on every push and PR — your safety net
+# ─────────────────────────────────────────────────
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -22,22 +26,82 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio httpx
+          pip install pytest pytest-asyncio httpx 
 
-      - name: Run Domain Tests
+      - name: Run Domain Diagnostics
         run: |
-          # We set PYTHONPATH to the current directory so tests can find domain.py
           export PYTHONPATH=$PYTHONPATH:.
-          pytest tests/
+          pytest tests/test_domain.py
 
-  build-check:
+  # ─────────────────────────────────────────────────
+  # JOB 2: BUILD VERIFICATION (unchanged)
+  # Confirms Dockerfile builds without errors
+  # ─────────────────────────────────────────────────
+  build-verification:
     needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build Docker Image
+      - name: Verify Docker Build
+        run: docker build -t rms-api:test .
+
+  # ─────────────────────────────────────────────────
+  # JOB 3: DEPLOY TO AZURE (new — runs only on main)
+  #
+  # This replaces ".\deploy.ps1 push" — fully automatic.
+  # Only runs on push to main (not on PRs).
+  #
+  # HOW TO ENABLE:
+  #   1. Go to your GitHub repo → Settings → Secrets
+  #   2. Add these 3 secrets:
+  #      - AZURE_ACR_NAME        (e.g., rmsacreo83l4)
+  #      - AZURE_ACR_PASSWORD    (from: az acr credential show --name rmsacreo83l4 --query "passwords[0].value" -o tsv)
+  #      - AZURE_WEBAPP_PUBLISH  (from: az webapp deployment list-publishing-profiles --name rms-app-eo83l4 --resource-group rms-final-rg --xml)
+  #
+  #   Until you add these secrets, this job will be
+  #   skipped automatically (no errors).
+  # ─────────────────────────────────────────────────
+  deploy-azure:
+    needs: build-verification
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Skip deployment if secrets aren't configured yet
+      - name: Check if Azure secrets are configured
+        id: check-secrets
         run: |
-          # This ensures our Dockerfile doesn't have any 'wiring' errors
-          docker build -t rms-api:latest .
+          if [ -z "${{ secrets.AZURE_ACR_NAME }}" ]; then
+            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "⏭️ Azure secrets not configured — skipping deployment."
+            echo "   Add AZURE_ACR_NAME, AZURE_ACR_PASSWORD, and AZURE_WEBAPP_PUBLISH"
+            echo "   to GitHub repo Settings → Secrets to enable auto-deploy."
+          else
+            echo "configured=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Login to Azure Container Registry
+        if: steps.check-secrets.outputs.configured == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.AZURE_ACR_NAME }}.azurecr.io
+          username: ${{ secrets.AZURE_ACR_NAME }}
+          password: ${{ secrets.AZURE_ACR_PASSWORD }}
+
+      - name: Build and Push Docker Image
+        if: steps.check-secrets.outputs.configured == 'true'
+        run: |
+          docker build -t ${{ secrets.AZURE_ACR_NAME }}.azurecr.io/rms-api:latest .
+          docker push ${{ secrets.AZURE_ACR_NAME }}.azurecr.io/rms-api:latest
+
+      - name: Deploy to Azure App Service
+        if: steps.check-secrets.outputs.configured == 'true'
+        uses: azure/webapps-deploy@v2
+        with:
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH }}
+          images: ${{ secrets.AZURE_ACR_NAME }}.azurecr.io/rms-api:latest

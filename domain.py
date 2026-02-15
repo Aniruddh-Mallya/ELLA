@@ -1,28 +1,31 @@
 from typing import List, Dict, Optional
-from ports import ResearchManagerPort, AuthPort, ProjectDatabasePort, TokenProviderPort, Project, User
+from ports import Project, User, ProjectDatabasePort, ResearchApiPort, MessageBrokerPort, TokenProviderPort
 
-class ResearchService(ResearchManagerPort):
-    """The 'CPU' - Operates ONLY on Clean Domain Models."""
-    def __init__(self, db_port: ProjectDatabasePort):
-        self.db = db_port
+class ResearchService:
+    """The 'CPU' - Logic for research management."""
+    def __init__(self, db: ProjectDatabasePort, api: ResearchApiPort, broker: MessageBrokerPort):
+        self.db = db
+        self.api = api
+        self.broker = broker
 
     def get_all_projects(self) -> List[Project]:
-        # Domain simply asks the Port for 'Projects'. 
-        # It doesn't know there is a Mapper or SQL involved.
         return self.db.fetch_all()
 
     def create_project(self, project: Project, user: User) -> Project:
         if user.role not in ["admin", "researcher"]:
-            raise PermissionError("Access Denied: Role unauthorized to create projects.")
+            raise PermissionError("Access Denied: Role unauthorized.")
+        if len(project.title) < 5:
+            raise ValueError("Validation Error: Title must be at least 5 chars.")
         
-        if len(project.title) < 4:
-            raise ValueError("Validation Error: Project title is too short.")
-            
-        # The domain object already has its 'reference_id' generated at instantiation.
-        # We just pass the clean object to the port.
-        return self.db.save(project)
+        saved = self.db.save(project)
+        self.broker.publish_event("PROJECT_CREATED", {
+            "ref_id": saved.reference_id,
+            "researcher": saved.researcher
+        })
+        return saved
 
-class AuthService(AuthPort):
+class AuthService:
+    """The 'Security Controller' - Logic for identity."""
     def __init__(self, token_provider: TokenProviderPort):
         self.token_provider = token_provider
 
@@ -33,5 +36,4 @@ class AuthService(AuthPort):
 
     def authorize(self, token: str) -> Optional[User]:
         payload = self.token_provider.decode(token)
-        if payload: return User(email=payload['email'], role=payload['role'])
-        return None
+        return User(email=payload['email'], role=payload['role']) if payload else None
