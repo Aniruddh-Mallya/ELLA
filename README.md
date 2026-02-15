@@ -1,4 +1,4 @@
-# RMS — Research Management System
+# ELLA: Secure Identity & Profile Management System 
 
 A Python backend built with the **Hexagonal (Ports & Adapters) Architecture**, containerized with Docker, and deployed to **Azure Cloud** using Terraform.
 
@@ -31,11 +31,11 @@ docker-compose up --build
 # Visit http://localhost:8002
 ```
 
-## Deploy to Azure (Free Student Tier)
+## Deploy to Azure
 
 ### Prerequisites
 
-- [Azure for Students](https://azure.microsoft.com/en-us/free/students) account (free, no credit card)
+- [Azure Account](https://azure.microsoft.com/en-us) account 
 - [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) installed
 - [Terraform](https://developer.hashicorp.com/terraform/install) installed
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) running
@@ -54,9 +54,9 @@ $env:TF_VAR_jwt_secret = "your-jwt-signing-secret"
 ```
 
 This will:
-1. Create a PostgreSQL database on Azure (free tier)
-2. Create a container registry (free tier)
-3. Create an App Service (free tier)
+1. Create a PostgreSQL database on Azure 
+2. Create a container registry 
+3. Create an App Service 
 4. Build your Docker image and push it
 5. Print your live URL
 
@@ -75,10 +75,6 @@ cd terraform
 .\deploy.ps1 debug     # Open /debug endpoint
 .\deploy.ps1 destroy   # Delete everything (stops charges)
 ```
-
-### Cost
-
-**₹0/month** on Azure for Students free tier.
 
 ## Project Structure
 
