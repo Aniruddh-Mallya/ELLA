@@ -31,11 +31,11 @@ docker-compose up --build
 # Visit http://localhost:8002
 ```
 
-## Deploy to Azure (Free Student Tier)
+## Deploy to Azure
 
 ### Prerequisites
 
-- [Azure for Students](https://azure.microsoft.com/en-us/free/students) account (free, no credit card)
+- [Azure Account](https://azure.microsoft.com/en-us) account 
 - [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) installed
 - [Terraform](https://developer.hashicorp.com/terraform/install) installed
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) running
@@ -75,10 +75,6 @@ cd terraform
 .\deploy.ps1 debug     # Open /debug endpoint
 .\deploy.ps1 destroy   # Delete everything (stops charges)
 ```
-
-### Cost
-
-**₹0/month** on Azure for Students free tier.
 
 ## Project Structure
 
