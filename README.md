@@ -54,9 +54,9 @@ $env:TF_VAR_jwt_secret = "your-jwt-signing-secret"
 ```
 
 This will:
-1. Create a PostgreSQL database on Azure (free tier)
-2. Create a container registry (free tier)
-3. Create an App Service (free tier)
+1. Create a PostgreSQL database on Azure 
+2. Create a container registry 
+3. Create an App Service 
 4. Build your Docker image and push it
 5. Print your live URL
 
