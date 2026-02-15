@@ -1,4 +1,4 @@
-# RMS — Research Management System
+# ELLA: Secure Identity & Profile Management System 
 
 A Python backend built with the **Hexagonal (Ports & Adapters) Architecture**, containerized with Docker, and deployed to **Azure Cloud** using Terraform.
 
