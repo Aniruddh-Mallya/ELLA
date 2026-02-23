@@ -1,9 +1,7 @@
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
-psycopg2-binary
 pyjwt
-python-multipart
-httpx
-pytest
-pytest-asyncio
+pydantic
+bcrypt
+psycopg2-binary
