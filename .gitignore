@@ -14,6 +14,7 @@ crash.log
 
 # ── Local data ──
 data/research.db
+docs/plantuml/*.plantuml
 
 # ── Logs ──
 *.zip
