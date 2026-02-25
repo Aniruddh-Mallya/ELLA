@@ -32,6 +32,18 @@ class UserRepositoryPort(ABC):
     @abstractmethod
     def save(self, email: str, password_hash: str, role: str) -> None: pass
 
+    @abstractmethod
+    def fetch_all(self) -> List[Dict]: pass
+    # Returns list of dicts with keys: email, role (NO password_hash)
+
+    @abstractmethod
+    def update_role(self, email: str, new_role: str) -> bool: pass
+    # Returns True if user was found and updated, False otherwise
+
+    @abstractmethod
+    def delete(self, email: str) -> bool: pass
+    # Returns True if user was found and deleted, False otherwise
+
 class TokenProviderPort(ABC):
     @abstractmethod
     def encode(self, payload: Dict) -> str: pass

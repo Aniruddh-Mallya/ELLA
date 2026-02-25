@@ -18,12 +18,16 @@
             const [token, setToken] = useState(localStorage.getItem('token'));
             const [role, setRole] = useState(localStorage.getItem('role'));
             const [projects, setProjects] = useState([]);
+            const [users, setUsers] = useState([]);
             const [isLoading, setIsLoading] = useState(false);
             const [error, setError] = useState(null);
-            const [adapterMode, setAdapterMode] = useState('prod-sqlite');
+            const [success, setSuccess] = useState(null);
+            const [adapterMode, setAdapterMode] = useState('prod-postgres');
+            const [activeTab, setActiveTab] = useState('projects');
 
             const apiCall = async (endpoint, method = 'GET', body = null) => {
                 setError(null);
+                setSuccess(null);
                 const headers = { 'Content-Type': 'application/json', 'X-Adapter-Mode': adapterMode };
                 if (token) headers['Authorization'] = `Bearer ${token}`;
                 try {
@@ -50,13 +54,58 @@
                 }
             };
 
+            const loadProjects = async () => {
+                setIsLoading(true);
+                const data = await apiCall('/api/projects');
+                if (data) setProjects(data);
+                setIsLoading(false);
+            };
+
+            const loadUsers = async () => {
+                setIsLoading(true);
+                const data = await apiCall('/api/users');
+                if (data) setUsers(data);
+                setIsLoading(false);
+            };
+
             useEffect(() => {
                 if (token) {
-                    setProjects([]);
-                    setIsLoading(true);
-                    apiCall('/api/projects').then(data => { if(data) setProjects(data); setIsLoading(false); });
+                    if (activeTab === 'projects') loadProjects();
+                    if (activeTab === 'users' && role === 'admin') loadUsers();
                 }
-            }, [token, adapterMode]);
+            }, [token, adapterMode, activeTab]);
+
+            const handleChangeRole = async (email, currentRole) => {
+                const newRole = currentRole === 'admin' ? 'researcher' : 'admin';
+                const res = await apiCall('/api/users/role', 'PATCH', { email, role: newRole });
+                if (res) {
+                    setSuccess(`Role changed: ${email} → ${newRole}`);
+                    loadUsers();
+                }
+            };
+
+            const handleDeleteUser = async (email) => {
+                if (!confirm(`Delete user ${email}? This cannot be undone.`)) return;
+                const res = await apiCall('/api/users', 'DELETE', { email });
+                if (res) {
+                    setSuccess(`Deleted user: ${email}`);
+                    loadUsers();
+                }
+            };
+
+            const handleCreateUser = async (e) => {
+                e.preventDefault();
+                const res = await apiCall('/api/users', 'POST', {
+                    email: e.target.email.value,
+                    password: e.target.password.value,
+                    role: e.target.role.value,
+                });
+                if (res) {
+                    setSuccess(`Created user: ${res.email} (${res.role})`);
+                    e.target.reset();
+                    loadUsers();
+                }
+            };
 
             if (!token) return (
                 <div className="flex items-center justify-center h-screen bg-gray-100">
@@ -75,45 +124,107 @@
                     <div className="bg-amber-50 p-4 mb-8 rounded-xl border border-amber-200 flex justify-between items-center shadow-sm">
                         <span className="text-amber-800 font-bold text-xs uppercase tracking-widest">Active Pillar:</span>
                         <select value={adapterMode} onChange={(e) => setAdapterMode(e.target.value)} className="p-2 border border-amber-300 rounded-lg text-xs font-bold bg-white">
-                            <option value="prod-sqlite">SQLite (Reliable)</option>
-                            <option value="prod-postgres">PostgreSQL (Cloud)</option>
+                            <option value="prod-postgres">PostgreSQL (Cloud - Persistent)</option>
+                            <option value="prod-sqlite">SQLite (Local - Ephemeral)</option>
                             <option value="dev-mock">MockDB (Simulation)</option>
                         </select>
                     </div>
 
                     <header className="flex justify-between items-end mb-8 border-b pb-4">
                         <h1 className="text-5xl font-black tracking-tighter text-gray-900">Research Portal</h1>
-                        <button onClick={() => { localStorage.clear(); setToken(null); }} className="text-red-500 font-bold hover:underline mb-1 text-sm uppercase">Logout ({role})</button>
+                        <button onClick={() => { localStorage.clear(); setToken(null); setRole(null); }} className="text-red-500 font-bold hover:underline mb-1 text-sm uppercase">Logout ({role})</button>
                     </header>
 
-                    {error && <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-r-xl mb-6 font-bold text-sm">{error}</div>}
-
+                    {/* Tab Navigation */}
                     {role === 'admin' && (
-                        <div className="bg-white p-6 rounded-2xl shadow-sm border mb-8">
-                            <h3 className="font-black mb-4 text-gray-400 text-xs uppercase tracking-widest flex items-center gap-2">Register New Project</h3>
-                            <form onSubmit={async (e) => {
-                                e.preventDefault();
-                                const res = await apiCall('/api/projects', 'POST', { title: e.target.title.value, researcher: e.target.res.value });
-                                if (res) { setProjects(prev => [...prev, res]); e.target.reset(); }
-                            }} className="flex flex-col md:flex-row gap-4">
-                                <input name="title" placeholder="Title (min 5 chars)" className="flex-1 p-3 border rounded-xl bg-gray-50 outline-none focus:ring-2 focus:ring-blue-400" required />
-                                <input name="res" placeholder="Researcher" className="p-3 border rounded-xl bg-gray-50 outline-none focus:ring-2 focus:ring-blue-400" required />
-                                <button className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700 transition">Create</button>
-                            </form>
+                        <div className="flex gap-1 mb-6">
+                            <button
+                                onClick={() => setActiveTab('projects')}
+                                className={`px-6 py-2.5 rounded-xl text-sm font-bold transition ${activeTab === 'projects' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+                            >Projects</button>
+                            <button
+                                onClick={() => setActiveTab('users')}
+                                className={`px-6 py-2.5 rounded-xl text-sm font-bold transition ${activeTab === 'users' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+                            >Users</button>
                         </div>
                     )}
 
-                    <div className="grid gap-4">
-                        <h2 className="text-xl font-bold text-gray-800">Inventory {isLoading && <span className="text-xs text-blue-500 animate-pulse ml-2">...WIRING...</span>}</h2>
-                        {projects.length === 0 && !isLoading ? (
-                            <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-gray-100 italic text-gray-400">No projects in {adapterMode}.</div>
-                        ) : projects.map(p => (
-                            <div key={p.reference_id} className="bg-white p-5 rounded-2xl border shadow-sm flex justify-between items-center hover:shadow-md transition">
-                                <div><h4 className="font-bold text-xl text-gray-900">{p.title}</h4><p className="text-gray-400 text-sm">PI: {p.researcher}</p></div>
-                                <span className="bg-blue-50 text-blue-600 px-4 py-1.5 rounded-full text-[10px] font-black uppercase border border-blue-100">{p.status}</span>
+                    {error && <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-r-xl mb-6 font-bold text-sm">{error}</div>}
+                    {success && <div className="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded-r-xl mb-6 font-bold text-sm">{success}</div>}
+
+                    {/* ========== PROJECTS TAB ========== */}
+                    {activeTab === 'projects' && (
+                        <>
+                            {role === 'admin' && (
+                                <div className="bg-white p-6 rounded-2xl shadow-sm border mb-8">
+                                    <h3 className="font-black mb-4 text-gray-400 text-xs uppercase tracking-widest flex items-center gap-2">Register New Project</h3>
+                                    <form onSubmit={async (e) => {
+                                        e.preventDefault();
+                                        const res = await apiCall('/api/projects', 'POST', { title: e.target.title.value, researcher: e.target.res.value });
+                                        if (res) { setProjects(prev => [...prev, res]); e.target.reset(); }
+                                    }} className="flex flex-col md:flex-row gap-4">
+                                        <input name="title" placeholder="Title (min 5 chars)" className="flex-1 p-3 border rounded-xl bg-gray-50 outline-none focus:ring-2 focus:ring-blue-400" required />
+                                        <input name="res" placeholder="Researcher" className="p-3 border rounded-xl bg-gray-50 outline-none focus:ring-2 focus:ring-blue-400" required />
+                                        <button className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700 transition">Create</button>
+                                    </form>
+                                </div>
+                            )}
+
+                            <div className="grid gap-4">
+                                <h2 className="text-xl font-bold text-gray-800">Inventory {isLoading && <span className="text-xs text-blue-500 animate-pulse ml-2">...WIRING...</span>}</h2>
+                                {projects.length === 0 && !isLoading ? (
+                                    <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-gray-100 italic text-gray-400">No projects in {adapterMode}.</div>
+                                ) : projects.map(p => (
+                                    <div key={p.reference_id} className="bg-white p-5 rounded-2xl border shadow-sm flex justify-between items-center hover:shadow-md transition">
+                                        <div><h4 className="font-bold text-xl text-gray-900">{p.title}</h4><p className="text-gray-400 text-sm">PI: {p.researcher}</p></div>
+                                        <span className="bg-blue-50 text-blue-600 px-4 py-1.5 rounded-full text-[10px] font-black uppercase border border-blue-100">{p.status}</span>
+                                    </div>
+                                ))}
                             </div>
-                        ))}
-                    </div>
+                        </>
+                    )}
+
+                    {/* ========== USERS TAB (Admin Only) ========== */}
+                    {activeTab === 'users' && role === 'admin' && (
+                        <>
+                            <div className="bg-white p-6 rounded-2xl shadow-sm border mb-8">
+                                <h3 className="font-black mb-4 text-gray-400 text-xs uppercase tracking-widest">Create New User</h3>
+                                <form onSubmit={handleCreateUser} className="flex flex-col md:flex-row gap-4">
+                                    <input name="email" type="email" placeholder="Email" className="flex-1 p-3 border rounded-xl bg-gray-50 outline-none focus:ring-2 focus:ring-blue-400" required />
+                                    <input name="password" type="password" placeholder="Password (min 6)" className="p-3 border rounded-xl bg-gray-50 outline-none focus:ring-2 focus:ring-blue-400" required />
+                                    <select name="role" className="p-3 border rounded-xl bg-gray-50 outline-none focus:ring-2 focus:ring-blue-400 font-bold text-sm">
+                                        <option value="researcher">Researcher</option>
+                                        <option value="admin">Admin</option>
+                                    </select>
+                                    <button className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700 transition">Create</button>
+                                </form>
+                            </div>
+
+                            <div className="grid gap-4">
+                                <h2 className="text-xl font-bold text-gray-800">User Directory {isLoading && <span className="text-xs text-blue-500 animate-pulse ml-2">...LOADING...</span>}</h2>
+                                {users.length === 0 && !isLoading ? (
+                                    <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-gray-100 italic text-gray-400">No users found.</div>
+                                ) : users.map(u => (
+                                    <div key={u.email} className="bg-white p-5 rounded-2xl border shadow-sm flex justify-between items-center hover:shadow-md transition">
+                                        <div>
+                                            <h4 className="font-bold text-xl text-gray-900">{u.email}</h4>
+                                            <span className={`text-xs font-black uppercase tracking-wider ${u.role === 'admin' ? 'text-purple-600' : 'text-blue-500'}`}>{u.role}</span>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={() => handleChangeRole(u.email, u.role)}
+                                                className="bg-amber-50 text-amber-700 px-4 py-2 rounded-xl text-xs font-bold border border-amber-200 hover:bg-amber-100 transition"
+                                            >{u.role === 'admin' ? 'Demote' : 'Promote'}</button>
+                                            <button
+                                                onClick={() => handleDeleteUser(u.email)}
+                                                className="bg-red-50 text-red-600 px-4 py-2 rounded-xl text-xs font-bold border border-red-200 hover:bg-red-100 transition"
+                                            >Delete</button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </>
+                    )}
                 </div>
             );
         };

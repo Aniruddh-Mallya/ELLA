@@ -88,11 +88,7 @@ class MockProjectAdapter(ProjectDatabasePort):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# PILLAR 1b: PERSISTENCE — User Adapters (NEW)
-#
-# Symmetry:
-#   ResearchService → ProjectDatabasePort → SQLite/Postgres ProjectAdapter
-#   AuthService     → UserRepositoryPort  → SQLite/Postgres UserAdapter
+# PILLAR 1b: PERSISTENCE — User Adapters (v3: +fetch_all, update_role, delete)
 # ═══════════════════════════════════════════════════════════════════
 
 class SQLiteUserAdapter(UserRepositoryPort):
@@ -116,6 +112,29 @@ class SQLiteUserAdapter(UserRepositoryPort):
             db.add(DBUser(email=email, password_hash=password_hash, role=role))
             db.commit()
 
+    def fetch_all(self) -> List[Dict]:
+        with self.SessionLocal() as db:
+            users = db.query(DBUser).all()
+            return [{"email": u.email, "role": u.role} for u in users]
+
+    def update_role(self, email: str, new_role: str) -> bool:
+        with self.SessionLocal() as db:
+            user = db.query(DBUser).filter(DBUser.email == email).first()
+            if user is None:
+                return False
+            user.role = new_role
+            db.commit()
+            return True
+
+    def delete(self, email: str) -> bool:
+        with self.SessionLocal() as db:
+            user = db.query(DBUser).filter(DBUser.email == email).first()
+            if user is None:
+                return False
+            db.delete(user)
+            db.commit()
+            return True
+
 
 class PostgresUserAdapter(UserRepositoryPort):
     def __init__(self, db_url: str):
@@ -138,6 +157,29 @@ class PostgresUserAdapter(UserRepositoryPort):
             db.add(DBUser(email=email, password_hash=password_hash, role=role))
             db.commit()
 
+    def fetch_all(self) -> List[Dict]:
+        with self.SessionLocal() as db:
+            users = db.query(DBUser).all()
+            return [{"email": u.email, "role": u.role} for u in users]
+
+    def update_role(self, email: str, new_role: str) -> bool:
+        with self.SessionLocal() as db:
+            user = db.query(DBUser).filter(DBUser.email == email).first()
+            if user is None:
+                return False
+            user.role = new_role
+            db.commit()
+            return True
+
+    def delete(self, email: str) -> bool:
+        with self.SessionLocal() as db:
+            user = db.query(DBUser).filter(DBUser.email == email).first()
+            if user is None:
+                return False
+            db.delete(user)
+            db.commit()
+            return True
+
 
 class MockUserAdapter(UserRepositoryPort):
     def __init__(self):
@@ -148,6 +190,21 @@ class MockUserAdapter(UserRepositoryPort):
 
     def save(self, email: str, password_hash: str, role: str) -> None:
         self.users[email] = {"email": email, "role": role, "password_hash": password_hash}
+
+    def fetch_all(self) -> List[Dict]:
+        return [{"email": u["email"], "role": u["role"]} for u in self.users.values()]
+
+    def update_role(self, email: str, new_role: str) -> bool:
+        if email not in self.users:
+            return False
+        self.users[email]["role"] = new_role
+        return True
+
+    def delete(self, email: str) -> bool:
+        if email not in self.users:
+            return False
+        del self.users[email]
+        return True
 
 
 # ═══════════════════════════════════════════════════════════════════

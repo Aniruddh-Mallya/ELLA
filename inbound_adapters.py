@@ -1,19 +1,19 @@
 """
-inbound_adapters.py - Cloud-Ready (Auth Upgrade v2)
+inbound_adapters.py - Cloud-Ready (v3: User Lifecycle)
 =====================================================
-CHANGES FROM v1:
-  - get_user_adapter()  → mirrors get_db_adapter() symmetry
-  - get_auth_service()  → now injects UserRepositoryPort + PasswordHasherPort
-  - /api/login          → accepts {email, password} instead of just {email}
-  - /api/projects POST  → extracts user from JWT token (no more hardcoded admin)
-  - /debug              → shows adapter mode + postgres connectivity
-  - seed_users()        → called once at startup to insert default users
+CHANGES FROM v2:
+  - get_user_service()  → new factory injecting UserRepositoryPort + PasswordHasherPort
+  - GET /api/users      → admin lists all users
+  - POST /api/users     → admin creates a user
+  - PATCH /api/users/role → admin changes a user's role
+  - DELETE /api/users   → admin deletes a user
+  - All existing routes UNCHANGED
 """
 import os, sys
 from fastapi import FastAPI, Header, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from domain import ResearchService, AuthService
+from domain import ResearchService, AuthService, UserService
 from outbound_adapters import (
     SQLiteProjectAdapter, MockProjectAdapter, PostgresProjectAdapter,
     SQLiteUserAdapter, MockUserAdapter, PostgresUserAdapter,
@@ -61,8 +61,29 @@ def get_auth_service(user_repo=Depends(get_user_adapter)):
     )
 
 
+def get_user_service(user_repo=Depends(get_user_adapter)):
+    """User service — admin-only CRUD for user lifecycle."""
+    return UserService(user_repo=user_repo, hasher=BcryptHasher())
+
+
 def get_research_service(db=Depends(get_db_adapter)):
     return ResearchService(db, ScholarAdapter(), LogBrokerAdapter())
+
+
+# =====================================================================
+# HELPER: Extract user from Authorization header
+# =====================================================================
+
+def _extract_user(authorization: str, auth: AuthService):
+    """Parse Bearer token and return User or raise 401."""
+    from ports import User
+    user = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.replace("Bearer ", "")
+        user = auth.authorize(token)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated. Please login.")
+    return user
 
 
 # =====================================================================
@@ -88,7 +109,7 @@ def startup_seed():
 
 
 # =====================================================================
-# ROUTES
+# ROUTES — EXISTING (UNCHANGED)
 # =====================================================================
 
 @app.get("/")
@@ -104,8 +125,7 @@ async def health_check():
 @app.post("/api/login")
 async def login(payload: dict = Body(...), auth: AuthService = Depends(get_auth_service)):
     """
-    CHANGED: Now requires {email, password} instead of just {email}.
-    Returns {token, role} on success, 401 on failure.
+    Requires {email, password}. Returns {token, role} on success, 401 on failure.
     """
     email = payload.get("email", "")
     password = payload.get("password", "")
@@ -130,20 +150,10 @@ async def create_project(
     auth: AuthService = Depends(get_auth_service),
     authorization: str = Header(None),
 ):
-    """
-    CHANGED: Extracts user from JWT token instead of hardcoding admin.
-    The frontend sends 'Authorization: Bearer <token>' on every request.
-    """
+    """Extracts user from JWT token."""
     from ports import Project, User
 
-    # Extract user from token
-    user = None
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.replace("Bearer ", "")
-        user = auth.authorize(token)
-
-    if user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated. Please login.")
+    user = _extract_user(authorization, auth)
 
     try:
         proj = Project(title=data["title"], researcher=data["researcher"])
@@ -153,6 +163,91 @@ async def create_project(
     except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+# =====================================================================
+# ROUTES — v3: USER LIFECYCLE (NEW)
+# =====================================================================
+
+@app.get("/api/users")
+async def list_users(
+    user_svc: UserService = Depends(get_user_service),
+    auth: AuthService = Depends(get_auth_service),
+    authorization: str = Header(None),
+):
+    """Admin-only: list all users (email + role, never password_hash)."""
+    caller = _extract_user(authorization, auth)
+    try:
+        return user_svc.list_users(caller)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.post("/api/users")
+async def create_user(
+    payload: dict = Body(...),
+    user_svc: UserService = Depends(get_user_service),
+    auth: AuthService = Depends(get_auth_service),
+    authorization: str = Header(None),
+):
+    """Admin-only: create a new user {email, password, role}."""
+    caller = _extract_user(authorization, auth)
+    try:
+        return user_svc.create_user(
+            email=payload.get("email", ""),
+            password=payload.get("password", ""),
+            role=payload.get("role", ""),
+            caller=caller,
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.patch("/api/users/role")
+async def change_user_role(
+    payload: dict = Body(...),
+    user_svc: UserService = Depends(get_user_service),
+    auth: AuthService = Depends(get_auth_service),
+    authorization: str = Header(None),
+):
+    """Admin-only: change a user's role {email, role}."""
+    caller = _extract_user(authorization, auth)
+    try:
+        return user_svc.change_role(
+            email=payload.get("email", ""),
+            new_role=payload.get("role", ""),
+            caller=caller,
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/users")
+async def delete_user(
+    payload: dict = Body(...),
+    user_svc: UserService = Depends(get_user_service),
+    auth: AuthService = Depends(get_auth_service),
+    authorization: str = Header(None),
+):
+    """Admin-only: delete a user {email}."""
+    caller = _extract_user(authorization, auth)
+    try:
+        return user_svc.delete_user(
+            email=payload.get("email", ""),
+            caller=caller,
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =====================================================================
+# DEBUG (UNCHANGED)
+# =====================================================================
 
 @app.get("/debug")
 async def debug_info():

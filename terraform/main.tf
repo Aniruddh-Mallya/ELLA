@@ -197,12 +197,8 @@ resource "azurerm_linux_web_app" "rms" {
     "WEBSITES_PORT" = "8000"
 
     #####################################################################
-    # FIX 3: Start in SQLITE mode first!
-    # If PostgreSQL is slow to start or unreachable, your app won't
-    # crash on boot. You can switch to prod-postgres from the UI
-    # dropdown once everything is running.
-    #####################################################################
-    "DEFAULT_ADAPTER_MODE" = "prod-sqlite"
+
+    "DEFAULT_ADAPTER_MODE" = "prod-postgres"
 
     # Pillar 1: Persistence — Connection string ready for when you switch
     "DATABASE_URL" = "postgresql+psycopg2://${var.pg_admin_username}:${urlencode(var.pg_admin_password)}@${azurerm_postgresql_flexible_server.rms.fqdn}:5432/rmsdb?sslmode=require"
