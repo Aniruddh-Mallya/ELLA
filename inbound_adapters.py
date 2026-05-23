@@ -17,14 +17,16 @@ from domain import ResearchService, AuthService, UserService
 from outbound_adapters import (
     SQLiteProjectAdapter, MockProjectAdapter, PostgresProjectAdapter,
     SQLiteUserAdapter, MockUserAdapter, PostgresUserAdapter,
-    JWTAdapter, ScholarAdapter, LogBrokerAdapter,
+    JWTAdapter, OpenAlexAdapter, MockResearchApiAdapter, LogBrokerAdapter,
     BcryptHasher, seed_users,
 )
 
-# -- Read config from environment (set by Terraform -> App Settings) --
-DATABASE_URL    = os.getenv("DATABASE_URL", "sqlite:///./data/research.db")
-JWT_SECRET      = os.getenv("JWT_SECRET", "rms_secret_2026")
-DEFAULT_ADAPTER = os.getenv("DEFAULT_ADAPTER_MODE", "prod-sqlite")
+# -- Read config from environment (see docker-compose.yml) --
+DATABASE_URL       = os.getenv("DATABASE_URL", "sqlite:///./data/research.db")
+JWT_SECRET         = os.getenv("JWT_SECRET", "rms_secret_2026")
+DEFAULT_ADAPTER    = os.getenv("DEFAULT_ADAPTER_MODE", "prod-sqlite")
+RESEARCH_API_MODE  = os.getenv("RESEARCH_API_MODE", "openalex")  # "openalex" | "mock"
+OPENALEX_EMAIL     = os.getenv("OPENALEX_EMAIL", "")             # optional polite-pool contact
 
 
 # =====================================================================
@@ -66,8 +68,21 @@ def get_user_service(user_repo=Depends(get_user_adapter)):
     return UserService(user_repo=user_repo, hasher=BcryptHasher())
 
 
-def get_research_service(db=Depends(get_db_adapter)):
-    return ResearchService(db, ScholarAdapter(), LogBrokerAdapter())
+def get_research_api_adapter(x_research_api: str = Header(None)):
+    """Research-literature adapter — swappable provider.
+
+    Defaults to OpenAlex; send `X-Research-Api: mock` (or set
+    RESEARCH_API_MODE=mock) to use the offline stub. This is the exact
+    same plug-and-play pattern as the database adapters.
+    """
+    mode = x_research_api or RESEARCH_API_MODE
+    if mode == "mock":
+        return MockResearchApiAdapter()
+    return OpenAlexAdapter(mailto=OPENALEX_EMAIL or None)
+
+
+def get_research_service(db=Depends(get_db_adapter), api=Depends(get_research_api_adapter)):
+    return ResearchService(db, api, LogBrokerAdapter())
 
 
 # =====================================================================
@@ -168,6 +183,35 @@ async def create_project(
         raise HTTPException(status_code=403, detail=str(e))
     except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# =====================================================================
+# ROUTES — PAPER SEARCH (Pillar 3: external research literature)
+# =====================================================================
+
+@app.get("/api/papers/search")
+def search_papers(
+    q: str,
+    limit: int = 10,
+    service: ResearchService = Depends(get_research_service),
+    auth: AuthService = Depends(get_auth_service),
+    authorization: str = Header(None),
+):
+    """Search academic papers via the active research provider (OpenAlex).
+
+    Defined as a SYNC `def` on purpose: the underlying HTTP call to
+    OpenAlex is blocking, so FastAPI runs this handler in a worker thread
+    and the main async event loop stays free to serve other requests.
+    """
+    _extract_user(authorization, auth)  # any logged-in user may search
+    try:
+        results = service.search_papers(q, limit=limit)
+        return [p.model_dump() for p in results]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        # Upstream provider failed (network, 429, 5xx, bad JSON)
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 # =====================================================================

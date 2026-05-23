@@ -1,6 +1,6 @@
 from typing import List, Dict, Optional
 from ports import (
-    Project, User,
+    Project, User, Paper,
     ProjectDatabasePort, ResearchApiPort, MessageBrokerPort,
     TokenProviderPort, UserRepositoryPort, PasswordHasherPort,
 )
@@ -15,6 +15,23 @@ class ResearchService:
 
     def get_all_projects(self) -> List[Project]:
         return self.db.fetch_all()
+
+    def search_papers(self, query: str, limit: int = 10) -> List[Paper]:
+        """Search external academic literature via the ResearchApiPort.
+
+        Pure business rules live here (input validation + event emission);
+        the actual HTTP call to whichever provider is delegated to the
+        injected adapter, so the domain stays infrastructure-free.
+        """
+        cleaned = (query or "").strip()
+        if len(cleaned) < 2:
+            raise ValueError("Validation Error: Search query must be at least 2 characters.")
+        if limit < 1 or limit > 25:
+            raise ValueError("Validation Error: limit must be between 1 and 25.")
+
+        results = self.api.search_papers(cleaned, limit=limit)
+        self.broker.publish_event("PAPER_SEARCH", {"query": cleaned, "count": len(results)})
+        return results
 
     def create_project(self, project: Project, user: User) -> Project:
         if user.role not in ["admin", "researcher"]:

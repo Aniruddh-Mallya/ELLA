@@ -10,7 +10,7 @@ Browser  →  FastAPI (inbound adapter)
             Outbound Adapters ──→ SQLite (local file)
                                 ──→ PostgreSQL (local container)
                                 ──→ JWT Auth + Bcrypt
-                                ──→ Scholar API
+                                ──→ OpenAlex (paper search)
                                 ──→ Event Broker
 ```
 
@@ -46,6 +46,19 @@ Default login credentials:
 | Admin | admin@rms.com | admin123 |
 | Researcher | researcher@rms.com | researcher123 |
 
+## Paper Search
+
+Search the global academic literature from the **Paper Search** tab (available to every logged-in user).
+
+- **Provider:** [OpenAlex](https://openalex.org) — free, no API key, ~220M papers, rich metadata (authors, venue, year, citation counts, abstracts, open-access PDF links).
+- **Endpoint:** `GET /api/papers/search?q=<query>&limit=<1-25>` (requires a valid login token).
+- **Swappable:** the provider is just another adapter behind `ResearchApiPort`. Send header `X-Research-Api: mock` (or set `RESEARCH_API_MODE=mock`) to use an offline stub with no network calls — handy for tests and demos.
+
+```bash
+curl "http://localhost:8002/api/papers/search?q=quantum%20computing&limit=5" \
+  -H "Authorization: Bearer <your-token>"
+```
+
 ## Switching Database Adapters at Runtime
 
 The UI exposes a dropdown that controls which adapter handles the next request via the `X-Adapter-Mode` header:
@@ -64,7 +77,9 @@ Set in [docker-compose.yml](docker-compose.yml). For running outside Docker, the
 |---|---|---|
 | `DATABASE_URL` | Postgres connection string | `postgresql+psycopg2://rmsadmin:rmsadmin@postgres:5432/rmsdb` |
 | `JWT_SECRET` | JWT signing key | `rms_local_secret_2026` |
-| `DEFAULT_ADAPTER_MODE` | Adapter used when no header is sent | `prod-sqlite` |
+| `DEFAULT_ADAPTER_MODE` | DB adapter used when no header is sent | `prod-sqlite` |
+| `RESEARCH_API_MODE` | Paper-search provider: `openalex` or `mock` | `openalex` |
+| `OPENALEX_EMAIL` | Optional contact email for OpenAlex's faster polite pool | `""` |
 
 ## Project Structure
 
@@ -77,7 +92,7 @@ ELLA/
 ├── ports.py             # Port interfaces (hexagonal)
 ├── domain.py            # Business logic (zero infra imports)
 ├── inbound_adapters.py  # FastAPI routes + dependency injection
-├── outbound_adapters.py # SQLite, Postgres, JWT, Bcrypt, Scholar API
+├── outbound_adapters.py # SQLite, Postgres, JWT, Bcrypt, OpenAlex paper search
 ├── index.html           # React frontend
 ├── requirements.txt     # Python dependencies
 └── tests/               # Domain diagnostics

@@ -5,3 +5,4 @@ pyjwt
 pydantic
 bcrypt
 psycopg2-binary
+httpx

@@ -1,4 +1,5 @@
 import jwt
+import httpx
 import datetime
 from typing import List, Dict, Optional
 from sqlalchemy import create_engine, Column, Integer, String
@@ -6,7 +7,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from ports import (
     ProjectDatabasePort, TokenProviderPort, ResearchApiPort,
     MessageBrokerPort, UserRepositoryPort, PasswordHasherPort,
-    Project,
+    Project, Paper,
 )
 
 Base = declarative_base()
@@ -238,12 +239,108 @@ class BcryptHasher(PasswordHasherPort):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# PILLAR 3: INTEGRATIONS (UNCHANGED)
+# PILLAR 3: INTEGRATIONS — Research API Adapters
 # ═══════════════════════════════════════════════════════════════════
 
-class ScholarAdapter(ResearchApiPort):
-    def search_papers(self, q):
-        return [{"source": "Scholar", "title": f"Study of {q}"}]
+class OpenAlexAdapter(ResearchApiPort):
+    """Real adapter backed by the OpenAlex API (https://openalex.org).
+
+    Free, no API key. Passing a contact email puts us in OpenAlex's
+    faster "polite pool". We translate OpenAlex's raw JSON into our own
+    provider-agnostic `Paper` model so nothing downstream is coupled to
+    OpenAlex's response shape.
+    """
+    BASE_URL = "https://api.openalex.org/works"
+
+    def __init__(self, mailto: Optional[str] = None, timeout: float = 10.0):
+        self.mailto = mailto
+        self.timeout = timeout
+
+    def search_papers(self, query: str, limit: int = 10) -> List[Paper]:
+        params = {
+            "search": query,
+            "per-page": max(1, min(limit, 25)),
+        }
+        if self.mailto:
+            params["mailto"] = self.mailto  # OpenAlex polite-pool hint
+
+        headers = {"User-Agent": f"ELLA-RMS/1.0 (mailto:{self.mailto or 'unknown'})"}
+
+        try:
+            resp = httpx.get(self.BASE_URL, params=params, headers=headers, timeout=self.timeout)
+            resp.raise_for_status()
+            payload = resp.json()
+        except httpx.HTTPError as e:
+            # Translate any transport/HTTP error into a domain-neutral error
+            raise RuntimeError(f"OpenAlex request failed: {e}") from e
+
+        return [self._to_paper(work) for work in payload.get("results", [])]
+
+    # ---- mapping helpers (OpenAlex JSON -> our Paper) ----
+
+    @staticmethod
+    def _reconstruct_abstract(inverted_index: Optional[Dict]) -> Optional[str]:
+        """OpenAlex ships abstracts as an inverted index {word: [positions]}.
+        Rebuild the original sentence by placing each word at its position(s)."""
+        if not inverted_index:
+            return None
+        slots = []
+        for word, positions in inverted_index.items():
+            for pos in positions:
+                slots.append((pos, word))
+        slots.sort(key=lambda pair: pair[0])
+        return " ".join(word for _, word in slots) or None
+
+    def _to_paper(self, work: Dict) -> Paper:
+        authorships = work.get("authorships") or []
+        authors = [
+            (a.get("author") or {}).get("display_name")
+            for a in authorships
+            if (a.get("author") or {}).get("display_name")
+        ]
+
+        # venue lives under primary_location.source.display_name (nullable chain)
+        location = work.get("primary_location") or {}
+        source = location.get("source") or {}
+        venue = source.get("display_name")
+
+        open_access = work.get("open_access") or {}
+
+        return Paper(
+            paper_id=work.get("id") or "",
+            title=work.get("title") or work.get("display_name") or "(untitled)",
+            authors=authors,
+            year=work.get("publication_year"),
+            venue=venue,
+            citation_count=work.get("cited_by_count") or 0,
+            abstract=self._reconstruct_abstract(work.get("abstract_inverted_index")),
+            url=work.get("doi") or work.get("id"),
+            open_access_pdf=open_access.get("oa_url"),
+            source="OpenAlex",
+        )
+
+
+class MockResearchApiAdapter(ResearchApiPort):
+    """Offline stand-in used for tests and the `mock` provider mode.
+
+    Returns deterministic fake `Paper` objects — no network calls — so the
+    UI and tests work without hitting OpenAlex."""
+    def search_papers(self, query: str, limit: int = 10) -> List[Paper]:
+        return [
+            Paper(
+                paper_id=f"mock:{query}:{i}",
+                title=f"A Study of {query} (part {i + 1})",
+                authors=["Ada Lovelace", "Alan Turing"],
+                year=2020 + i,
+                venue="Journal of Mock Studies",
+                citation_count=42 + i,
+                abstract=f"This is a mock abstract about {query} for offline testing.",
+                url="https://example.org/mock",
+                open_access_pdf=None,
+                source="Mock",
+            )
+            for i in range(min(limit, 3))
+        ]
 
 
 # ═══════════════════════════════════════════════════════════════════

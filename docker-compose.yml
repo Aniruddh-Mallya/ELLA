@@ -28,6 +28,10 @@ services:
       DEFAULT_ADAPTER_MODE: prod-sqlite
       DATABASE_URL: postgresql+psycopg2://rmsadmin:rmsadmin@postgres:5432/rmsdb
       JWT_SECRET: rms_local_secret_2026
+      # Paper search: "openalex" (real API) or "mock" (offline stub)
+      RESEARCH_API_MODE: openalex
+      # Optional: your email puts requests in OpenAlex's faster "polite pool"
+      OPENALEX_EMAIL: ""
     depends_on:
       postgres:
         condition: service_healthy

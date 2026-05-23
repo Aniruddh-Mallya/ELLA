@@ -14,6 +14,24 @@ class User(BaseModel):
     email: str
     role: str
 
+class Paper(BaseModel):
+    """A normalized academic paper — provider-agnostic.
+
+    Every research-API adapter (OpenAlex, Semantic Scholar, mock, ...)
+    maps its own raw response shape into THIS model, so the domain and
+    the frontend never have to know which provider answered.
+    """
+    paper_id: str
+    title: str
+    authors: List[str] = Field(default_factory=list)
+    year: Optional[int] = None
+    venue: Optional[str] = None
+    citation_count: int = 0
+    abstract: Optional[str] = None
+    url: Optional[str] = None
+    open_access_pdf: Optional[str] = None
+    source: str = "unknown"
+
 # --- The 4+1 Outbound Ports (The Sockets) ---
 
 class ProjectDatabasePort(ABC):
@@ -59,7 +77,7 @@ class PasswordHasherPort(ABC):
 
 class ResearchApiPort(ABC):
     @abstractmethod
-    def search_papers(self, query: str) -> List[Dict]: pass
+    def search_papers(self, query: str, limit: int = 10) -> List["Paper"]: pass
 
 class MessageBrokerPort(ABC):
     @abstractmethod

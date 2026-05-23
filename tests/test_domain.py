@@ -1,6 +1,6 @@
 import pytest
 from domain import ResearchService
-from ports import Project, User, ProjectDatabasePort, ResearchApiPort, MessageBrokerPort
+from ports import Project, User, Paper, ProjectDatabasePort, ResearchApiPort, MessageBrokerPort
 from typing import List, Dict
 
 # --- 1. THE TRAINING DUMMIES (Mock Outbound Adapters) ---
@@ -16,9 +16,12 @@ class MockDBAdapter(ProjectDatabasePort):
         return self.projects
 
 class MockApiAdapter(ResearchApiPort):
-    """Pillar 3 Mock: Simulation for Scholar/Scopus APIs."""
-    def search_papers(self, query: str) -> List[Dict]:
-        return [{"title": f"Mock Result for {query}", "source": "Test"}]
+    """Pillar 3 Mock: Simulation for the research-literature API."""
+    def search_papers(self, query: str, limit: int = 10) -> List[Paper]:
+        return [
+            Paper(paper_id=f"test:{i}", title=f"Mock Result for {query}", source="Test")
+            for i in range(min(limit, 2))
+        ]
 
 class MockBrokerAdapter(MessageBrokerPort):
     """Pillar 4 Mock: Simulation for Messaging/Events."""
@@ -68,3 +71,33 @@ def test_successful_project_creation_and_messaging():
     assert len(mock_db.fetch_all()) == 1  # Verify Pillar 1 (Storage)
     assert len(mock_broker.events_sent) == 1  # Verify Pillar 4 (Messaging)
     assert mock_broker.events_sent[0]["type"] == "PROJECT_CREATED"
+
+
+# --- 3. PAPER SEARCH (Pillar 3) ---
+
+def test_search_papers_happy_path():
+    """Search returns typed Paper objects and emits a PAPER_SEARCH event."""
+    mock_broker = MockBrokerAdapter()
+    service = ResearchService(MockDBAdapter(), MockApiAdapter(), mock_broker)
+
+    results = service.search_papers("quantum computing", limit=2)
+
+    assert len(results) == 2
+    assert all(isinstance(p, Paper) for p in results)
+    assert "quantum computing" in results[0].title
+    assert mock_broker.events_sent[0]["type"] == "PAPER_SEARCH"
+    assert mock_broker.events_sent[0]["data"]["count"] == 2
+
+
+def test_search_papers_rejects_short_query():
+    """Queries under 2 characters are rejected before any API call."""
+    service = ResearchService(MockDBAdapter(), MockApiAdapter(), MockBrokerAdapter())
+    with pytest.raises(ValueError, match="at least 2 characters"):
+        service.search_papers("a")
+
+
+def test_search_papers_rejects_bad_limit():
+    """limit outside 1..25 is rejected by the domain."""
+    service = ResearchService(MockDBAdapter(), MockApiAdapter(), MockBrokerAdapter())
+    with pytest.raises(ValueError, match="limit must be between"):
+        service.search_papers("valid query", limit=100)
