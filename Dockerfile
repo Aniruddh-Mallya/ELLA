@@ -18,6 +18,6 @@ COPY ports.py domain.py outbound_adapters.py inbound_adapters.py index.html ./
 # 4. Create data directory for SQLite fallback
 RUN mkdir -p /app/data
 
-# 5. Port 8000 — Azure WEBSITES_PORT must match this
-EXPOSE 8000
-CMD ["uvicorn", "inbound_adapters:app", "--host", "0.0.0.0", "--port", "8000"]
+# 5. Port 8002 — matches docker-compose mapping
+EXPOSE 8002
+CMD ["uvicorn", "inbound_adapters:app", "--host", "0.0.0.0", "--port", "8002"]

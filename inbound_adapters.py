@@ -96,16 +96,22 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.on_event("startup")
 def startup_seed():
-    """Seed default users into whichever DB the default adapter points to."""
+    """Seed default users into every real backing store we can reach.
+
+    Both SQLite and Postgres are seeded so the UI's adapter dropdown
+    can flip between them without "user not found" errors. Failures
+    in one backend don't block the other.
+    """
     hasher = BcryptHasher()
     try:
-        if DEFAULT_ADAPTER == "prod-postgres":
-            repo = PostgresUserAdapter(DATABASE_URL)
-        else:
-            repo = SQLiteUserAdapter()
-        seed_users(repo, hasher)
+        seed_users(SQLiteUserAdapter(), hasher)
     except Exception as e:
-        print(f"[SEED] Warning: Could not seed users — {e}", file=sys.stderr)
+        print(f"[SEED] SQLite seed skipped — {e}", file=sys.stderr)
+    if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
+        try:
+            seed_users(PostgresUserAdapter(DATABASE_URL), hasher)
+        except Exception as e:
+            print(f"[SEED] Postgres seed skipped — {e}", file=sys.stderr)
 
 
 # =====================================================================
