@@ -39,6 +39,15 @@ That starts two containers:
 
 On first boot the app seeds default users into **both** SQLite and Postgres so the runtime adapter switch works without re-seeding.
 
+> **Upgrading from an older build?** The database schema changed (researcher
+> profiles + project ownership). Reset your local data once so the new tables
+> are created cleanly:
+> ```bash
+> docker-compose down -v     # drops the Postgres volume
+> del data\research.db       # Windows: remove the SQLite file (rm on macOS/Linux)
+> docker-compose up --build
+> ```
+
 Default login credentials:
 
 | Role | Email | Password |
@@ -58,6 +67,13 @@ Search the global academic literature from the **Paper Search** tab (available t
 curl "http://localhost:8002/api/papers/search?q=quantum%20computing&limit=5" \
   -H "Authorization: Bearer <your-token>"
 ```
+
+## Researcher Profiles & Project Ownership
+
+- **Profiles:** every user has a profile — full name (required), institution (optional), and an optional ORCID iD. Edit yours from the **My Profile** tab. Profiles are strictly self-service: there is no endpoint to edit another user's profile, so an admin can never edit a researcher's profile.
+  - `GET /api/profile` — your own profile
+  - `PUT /api/profile` — update your own profile `{full_name, institution, orcid_id}`
+- **Project ownership:** a project automatically belongs to whoever creates it (taken from the login token — there's no typed-in name). Project listings show the owner's real name and institution, falling back to their email if no name is set yet.
 
 ## Switching Database Adapters at Runtime
 

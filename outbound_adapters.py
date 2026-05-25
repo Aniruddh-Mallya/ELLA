@@ -22,7 +22,7 @@ class DBProject(Base):
     id = Column(Integer, primary_key=True)
     ref_id = Column(String, unique=True)
     title = Column(String)
-    researcher = Column(String)
+    owner_email = Column(String)  # links the project to a real user (by email)
 
 
 class DBUser(Base):
@@ -31,6 +31,10 @@ class DBUser(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
     role = Column(String, nullable=False)  # "admin" | "researcher"
+    # --- researcher profile (all nullable; filled in by the user) ---
+    full_name = Column(String, nullable=True)
+    institution = Column(String, nullable=True)
+    orcid_id = Column(String, nullable=True)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -46,7 +50,7 @@ class SQLiteProjectAdapter(ProjectDatabasePort):
 
     def save(self, project: Project) -> Project:
         with self.SessionLocal() as db:
-            db_item = DBProject(ref_id=project.reference_id, title=project.title, researcher=project.researcher)
+            db_item = DBProject(ref_id=project.reference_id, title=project.title, owner_email=project.owner_email)
             db.add(db_item)
             db.commit()
             return project
@@ -54,7 +58,7 @@ class SQLiteProjectAdapter(ProjectDatabasePort):
     def fetch_all(self) -> List[Project]:
         with self.SessionLocal() as db:
             items = db.query(DBProject).all()
-            return [Project(reference_id=i.ref_id, title=i.title, researcher=i.researcher) for i in items]
+            return [Project(reference_id=i.ref_id, title=i.title, owner_email=i.owner_email or "") for i in items]
 
 
 class PostgresProjectAdapter(ProjectDatabasePort):
@@ -66,7 +70,7 @@ class PostgresProjectAdapter(ProjectDatabasePort):
 
     def save(self, project: Project) -> Project:
         with self.SessionLocal() as db:
-            db_item = DBProject(ref_id=project.reference_id, title=project.title, researcher=project.researcher)
+            db_item = DBProject(ref_id=project.reference_id, title=project.title, owner_email=project.owner_email)
             db.add(db_item)
             db.commit()
             return project
@@ -74,7 +78,7 @@ class PostgresProjectAdapter(ProjectDatabasePort):
     def fetch_all(self) -> List[Project]:
         with self.SessionLocal() as db:
             items = db.query(DBProject).all()
-            return [Project(reference_id=i.ref_id, title=i.title, researcher=i.researcher) for i in items]
+            return [Project(reference_id=i.ref_id, title=i.title, owner_email=i.owner_email or "") for i in items]
 
 
 class MockProjectAdapter(ProjectDatabasePort):
@@ -136,6 +140,28 @@ class SQLiteUserAdapter(UserRepositoryPort):
             db.commit()
             return True
 
+    def get_profile(self, email: str) -> Optional[Dict]:
+        with self.SessionLocal() as db:
+            user = db.query(DBUser).filter(DBUser.email == email).first()
+            if user is None:
+                return None
+            return {
+                "email": user.email, "role": user.role,
+                "full_name": user.full_name, "institution": user.institution,
+                "orcid_id": user.orcid_id,
+            }
+
+    def update_profile(self, email: str, full_name, institution, orcid_id) -> bool:
+        with self.SessionLocal() as db:
+            user = db.query(DBUser).filter(DBUser.email == email).first()
+            if user is None:
+                return False
+            user.full_name = full_name
+            user.institution = institution
+            user.orcid_id = orcid_id
+            db.commit()
+            return True
+
 
 class PostgresUserAdapter(UserRepositoryPort):
     def __init__(self, db_url: str):
@@ -181,6 +207,28 @@ class PostgresUserAdapter(UserRepositoryPort):
             db.commit()
             return True
 
+    def get_profile(self, email: str) -> Optional[Dict]:
+        with self.SessionLocal() as db:
+            user = db.query(DBUser).filter(DBUser.email == email).first()
+            if user is None:
+                return None
+            return {
+                "email": user.email, "role": user.role,
+                "full_name": user.full_name, "institution": user.institution,
+                "orcid_id": user.orcid_id,
+            }
+
+    def update_profile(self, email: str, full_name, institution, orcid_id) -> bool:
+        with self.SessionLocal() as db:
+            user = db.query(DBUser).filter(DBUser.email == email).first()
+            if user is None:
+                return False
+            user.full_name = full_name
+            user.institution = institution
+            user.orcid_id = orcid_id
+            db.commit()
+            return True
+
 
 class MockUserAdapter(UserRepositoryPort):
     def __init__(self):
@@ -190,7 +238,10 @@ class MockUserAdapter(UserRepositoryPort):
         return self.users.get(email)
 
     def save(self, email: str, password_hash: str, role: str) -> None:
-        self.users[email] = {"email": email, "role": role, "password_hash": password_hash}
+        self.users[email] = {
+            "email": email, "role": role, "password_hash": password_hash,
+            "full_name": None, "institution": None, "orcid_id": None,
+        }
 
     def fetch_all(self) -> List[Dict]:
         return [{"email": u["email"], "role": u["role"]} for u in self.users.values()]
@@ -205,6 +256,18 @@ class MockUserAdapter(UserRepositoryPort):
         if email not in self.users:
             return False
         del self.users[email]
+        return True
+
+    def get_profile(self, email: str) -> Optional[Dict]:
+        u = self.users.get(email)
+        if u is None:
+            return None
+        return {k: u.get(k) for k in ("email", "role", "full_name", "institution", "orcid_id")}
+
+    def update_profile(self, email: str, full_name, institution, orcid_id) -> bool:
+        if email not in self.users:
+            return False
+        self.users[email].update(full_name=full_name, institution=institution, orcid_id=orcid_id)
         return True
 
 
@@ -362,8 +425,10 @@ def seed_users(user_repo: UserRepositoryPort, hasher: PasswordHasherPort) -> Non
     Called once during app startup from inbound_adapters.py.
     """
     defaults = [
-        {"email": "admin@rms.com",      "password": "admin123",      "role": "admin"},
-        {"email": "researcher@rms.com", "password": "researcher123", "role": "researcher"},
+        {"email": "admin@rms.com",      "password": "admin123",      "role": "admin",
+         "full_name": "System Administrator", "institution": None},
+        {"email": "researcher@rms.com", "password": "researcher123", "role": "researcher",
+         "full_name": "Default Researcher",   "institution": "ELLA Research Institute"},
     ]
     for u in defaults:
         user_repo.save(
@@ -371,4 +436,14 @@ def seed_users(user_repo: UserRepositoryPort, hasher: PasswordHasherPort) -> Non
             password_hash=hasher.hash(u["password"]),
             role=u["role"],
         )
+        # Only set default profile values if the user hasn't filled theirs in
+        # yet — so a real edit survives a container restart / re-seed.
+        existing = user_repo.get_profile(u["email"])
+        if existing is not None and not existing.get("full_name"):
+            user_repo.update_profile(
+                email=u["email"],
+                full_name=u["full_name"],
+                institution=u["institution"],
+                orcid_id=None,
+            )
     print("[SEED] Default users verified/created.")

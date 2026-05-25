@@ -7,8 +7,21 @@ from pydantic import BaseModel, Field
 class Project(BaseModel):
     reference_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
-    researcher: str
+    owner_email: str = ""   # set by the service from the authenticated creator
     status: str = "Active"
+
+class ProjectView(BaseModel):
+    """A project enriched with its owner's human details, for display.
+
+    Returned by listing endpoints so the frontend shows a real name +
+    institution instead of an email or a typed-in string.
+    """
+    reference_id: str
+    title: str
+    status: str = "Active"
+    owner_email: str
+    owner_name: Optional[str] = None
+    owner_institution: Optional[str] = None
 
 class User(BaseModel):
     email: str
@@ -61,6 +74,16 @@ class UserRepositoryPort(ABC):
     @abstractmethod
     def delete(self, email: str) -> bool: pass
     # Returns True if user was found and deleted, False otherwise
+
+    @abstractmethod
+    def get_profile(self, email: str) -> Optional[Dict]: pass
+    # Returns dict with keys: email, role, full_name, institution, orcid_id
+    # (NO password_hash — this is the safe-to-display profile)
+
+    @abstractmethod
+    def update_profile(self, email: str, full_name: Optional[str],
+                       institution: Optional[str], orcid_id: Optional[str]) -> bool: pass
+    # Returns True if user was found and updated, False otherwise
 
 class TokenProviderPort(ABC):
     @abstractmethod

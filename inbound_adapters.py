@@ -13,7 +13,7 @@ import os, sys
 from fastapi import FastAPI, Header, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from domain import ResearchService, AuthService, UserService
+from domain import ResearchService, AuthService, UserService, ProfileService
 from outbound_adapters import (
     SQLiteProjectAdapter, MockProjectAdapter, PostgresProjectAdapter,
     SQLiteUserAdapter, MockUserAdapter, PostgresUserAdapter,
@@ -68,6 +68,11 @@ def get_user_service(user_repo=Depends(get_user_adapter)):
     return UserService(user_repo=user_repo, hasher=BcryptHasher())
 
 
+def get_profile_service(user_repo=Depends(get_user_adapter)):
+    """Profile service — self-service; a user edits only their own profile."""
+    return ProfileService(user_repo=user_repo)
+
+
 def get_research_api_adapter(x_research_api: str = Header(None)):
     """Research-literature adapter — swappable provider.
 
@@ -81,8 +86,13 @@ def get_research_api_adapter(x_research_api: str = Header(None)):
     return OpenAlexAdapter(mailto=OPENALEX_EMAIL or None)
 
 
-def get_research_service(db=Depends(get_db_adapter), api=Depends(get_research_api_adapter)):
-    return ResearchService(db, api, LogBrokerAdapter())
+def get_research_service(
+    db=Depends(get_db_adapter),
+    api=Depends(get_research_api_adapter),
+    user_repo=Depends(get_user_adapter),
+):
+    # user_repo lets the service enrich project listings with owner profiles
+    return ResearchService(db, api, LogBrokerAdapter(), user_repo)
 
 
 # =====================================================================
@@ -171,17 +181,62 @@ async def create_project(
     auth: AuthService = Depends(get_auth_service),
     authorization: str = Header(None),
 ):
-    """Extracts user from JWT token."""
-    from ports import Project, User
+    """Create a project owned by the authenticated caller.
+
+    The owner is taken from the JWT — there is no researcher-name input.
+    """
+    from ports import Project
 
     user = _extract_user(authorization, auth)
 
     try:
-        proj = Project(title=data["title"], researcher=data["researcher"])
+        proj = Project(title=data["title"])  # owner is set by the service
         return service.create_project(proj, user).model_dump()
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except (ValueError, KeyError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =====================================================================
+# ROUTES — PROFILE (self-service; a user manages only their own)
+# =====================================================================
+
+@app.get("/api/profile")
+async def get_profile(
+    profile_svc: ProfileService = Depends(get_profile_service),
+    auth: AuthService = Depends(get_auth_service),
+    authorization: str = Header(None),
+):
+    """Return the logged-in user's own profile."""
+    user = _extract_user(authorization, auth)
+    try:
+        return profile_svc.get_my_profile(user)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.put("/api/profile")
+async def update_profile(
+    payload: dict = Body(...),
+    profile_svc: ProfileService = Depends(get_profile_service),
+    auth: AuthService = Depends(get_auth_service),
+    authorization: str = Header(None),
+):
+    """Update the logged-in user's OWN profile {full_name, institution, orcid_id}.
+
+    Keyed entirely off the JWT, so it can only ever touch the caller's
+    own record — admins cannot edit anyone else's profile.
+    """
+    user = _extract_user(authorization, auth)
+    try:
+        return profile_svc.update_my_profile(
+            caller=user,
+            full_name=payload.get("full_name", ""),
+            institution=payload.get("institution", ""),
+            orcid_id=payload.get("orcid_id", ""),
+        )
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 

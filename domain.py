@@ -1,20 +1,44 @@
+import re
 from typing import List, Dict, Optional
 from ports import (
-    Project, User, Paper,
+    Project, ProjectView, User, Paper,
     ProjectDatabasePort, ResearchApiPort, MessageBrokerPort,
     TokenProviderPort, UserRepositoryPort, PasswordHasherPort,
 )
 
 
 class ResearchService:
-    """The 'CPU' - Logic for research management. (UNCHANGED)"""
-    def __init__(self, db: ProjectDatabasePort, api: ResearchApiPort, broker: MessageBrokerPort):
+    """The 'CPU' - Logic for research management.
+
+    Now also enriches project listings with each owner's real profile,
+    and stamps new projects with the authenticated creator as owner.
+    """
+    def __init__(self, db: ProjectDatabasePort, api: ResearchApiPort,
+                 broker: MessageBrokerPort, user_repo: UserRepositoryPort):
         self.db = db
         self.api = api
         self.broker = broker
+        self.user_repo = user_repo
 
-    def get_all_projects(self) -> List[Project]:
-        return self.db.fetch_all()
+    def get_all_projects(self) -> List[ProjectView]:
+        """Return projects joined with the owner's name + institution.
+
+        (Looks up each owner's profile; for a local app the per-project
+        lookup is fine — a future optimization would batch these.)"""
+        views: List[ProjectView] = []
+        for p in self.db.fetch_all():
+            profile = self.user_repo.get_profile(p.owner_email) if p.owner_email else None
+            profile = profile or {}
+            views.append(ProjectView(
+                reference_id=p.reference_id,
+                title=p.title,
+                status=p.status,
+                owner_email=p.owner_email,
+                # fall back to the email if the owner hasn't set a name yet
+                owner_name=profile.get("full_name") or p.owner_email or None,
+                owner_institution=profile.get("institution"),
+            ))
+        return views
 
     def search_papers(self, query: str, limit: int = 10) -> List[Paper]:
         """Search external academic literature via the ResearchApiPort.
@@ -39,10 +63,14 @@ class ResearchService:
         if len(project.title) < 5:
             raise ValueError("Validation Error: Title must be at least 5 chars.")
 
+        # The project always belongs to whoever is logged in creating it —
+        # never a typed-in name.
+        project.owner_email = user.email
+
         saved = self.db.save(project)
         self.broker.publish_event("PROJECT_CREATED", {
             "ref_id": saved.reference_id,
-            "researcher": saved.researcher,
+            "owner": saved.owner_email,
         })
         return saved
 
@@ -156,3 +184,47 @@ class UserService:
         if not success:
             raise ValueError(f"User '{email}' not found.")
         return {"email": email, "deleted": True}
+
+
+class ProfileService:
+    """Self-service researcher profile management.
+
+    Deliberately self-only: every method acts on the CALLER's own record.
+    There is no path here to edit someone else's profile, so an admin can
+    never edit a researcher's profile — only the researcher can.
+
+    Dependency (a port — no infrastructure imports):
+      - user_repo:  UserRepositoryPort  (SQLite/Postgres/Mock)
+    """
+    # ORCID looks like 0000-0002-1825-0097 (last char may be a checksum 'X')
+    _ORCID_RE = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dXx]")
+
+    def __init__(self, user_repo: UserRepositoryPort):
+        self.user_repo = user_repo
+
+    def get_my_profile(self, caller: User) -> Dict:
+        profile = self.user_repo.get_profile(caller.email)
+        if profile is None:
+            raise ValueError("Profile not found.")
+        return profile
+
+    def update_my_profile(self, caller: User, full_name: str,
+                          institution: Optional[str], orcid_id: Optional[str]) -> Dict:
+        # Full name is required; institution is optional.
+        if not full_name or not full_name.strip():
+            raise ValueError("Validation Error: Full name is required.")
+
+        # ORCID is optional, but if present it must be well-formed.
+        cleaned_orcid = (orcid_id or "").strip()
+        if cleaned_orcid and not self._ORCID_RE.fullmatch(cleaned_orcid):
+            raise ValueError("Validation Error: ORCID must look like 0000-0002-1825-0097.")
+
+        ok = self.user_repo.update_profile(
+            email=caller.email,
+            full_name=full_name.strip(),
+            institution=(institution or "").strip() or None,
+            orcid_id=cleaned_orcid or None,
+        )
+        if not ok:
+            raise ValueError("Profile not found.")
+        return self.user_repo.get_profile(caller.email)
