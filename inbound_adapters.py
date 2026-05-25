@@ -1,32 +1,25 @@
 """
-inbound_adapters.py - Cloud-Ready (v3: User Lifecycle)
-=====================================================
-CHANGES FROM v2:
-  - get_user_service()  → new factory injecting UserRepositoryPort + PasswordHasherPort
-  - GET /api/users      → admin lists all users
-  - POST /api/users     → admin creates a user
-  - PATCH /api/users/role → admin changes a user's role
-  - DELETE /api/users   → admin deletes a user
-  - All existing routes UNCHANGED
+inbound_adapters.py — FastAPI inbound adapter.
+
+HTTP routes + dependency wiring for auth, projects, and user lifecycle.
+Selects the outbound persistence adapter (PostgreSQL or SQLite) per request.
 """
 import os, sys
 from fastapi import FastAPI, Header, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from domain import ResearchService, AuthService, UserService, ProfileService
+from domain import ResearchService, AuthService, UserService
 from outbound_adapters import (
-    SQLiteProjectAdapter, MockProjectAdapter, PostgresProjectAdapter,
-    SQLiteUserAdapter, MockUserAdapter, PostgresUserAdapter,
-    JWTAdapter, OpenAlexAdapter, MockResearchApiAdapter, LogBrokerAdapter,
+    SQLiteProjectAdapter, PostgresProjectAdapter,
+    SQLiteUserAdapter, PostgresUserAdapter,
+    JWTAdapter, ScholarAdapter, LogBrokerAdapter,
     BcryptHasher, seed_users,
 )
 
-# -- Read config from environment (see docker-compose.yml) --
-DATABASE_URL       = os.getenv("DATABASE_URL", "sqlite:///./data/research.db")
-JWT_SECRET         = os.getenv("JWT_SECRET", "rms_secret_2026")
-DEFAULT_ADAPTER    = os.getenv("DEFAULT_ADAPTER_MODE", "prod-sqlite")
-RESEARCH_API_MODE  = os.getenv("RESEARCH_API_MODE", "openalex")  # "openalex" | "mock"
-OPENALEX_EMAIL     = os.getenv("OPENALEX_EMAIL", "")             # optional polite-pool contact
+# -- Read config from environment (set by Terraform -> App Settings) --
+DATABASE_URL    = os.getenv("DATABASE_URL", "sqlite:///./data/research.db")
+JWT_SECRET      = os.getenv("JWT_SECRET", "rms_secret_2026")
+DEFAULT_ADAPTER = os.getenv("DEFAULT_ADAPTER_MODE", "prod-sqlite")
 
 
 # =====================================================================
@@ -34,27 +27,23 @@ OPENALEX_EMAIL     = os.getenv("OPENALEX_EMAIL", "")             # optional poli
 # =====================================================================
 
 def get_db_adapter(x_adapter_mode: str = Header(None)):
-    """Project database adapter — unchanged logic, renamed classes."""
+    """Select the project store: PostgreSQL (cloud) or SQLite (local)."""
     mode = x_adapter_mode or DEFAULT_ADAPTER
-    if mode == "dev-mock":
-        return MockProjectAdapter()
     if mode == "prod-postgres":
         return PostgresProjectAdapter(DATABASE_URL)
     return SQLiteProjectAdapter()
 
 
 def get_user_adapter(x_adapter_mode: str = Header(None)):
-    """User repository adapter — mirrors get_db_adapter() exactly."""
+    """Select the user store: PostgreSQL (cloud) or SQLite (local)."""
     mode = x_adapter_mode or DEFAULT_ADAPTER
-    if mode == "dev-mock":
-        return MockUserAdapter()
     if mode == "prod-postgres":
         return PostgresUserAdapter(DATABASE_URL)
     return SQLiteUserAdapter()
 
 
 def get_auth_service(user_repo=Depends(get_user_adapter)):
-    """Auth service — now backed by a real user repository + bcrypt."""
+    """Auth service backed by the user repository + bcrypt."""
     hasher = BcryptHasher()
     return AuthService(
         user_repo=user_repo,
@@ -68,31 +57,8 @@ def get_user_service(user_repo=Depends(get_user_adapter)):
     return UserService(user_repo=user_repo, hasher=BcryptHasher())
 
 
-def get_profile_service(user_repo=Depends(get_user_adapter)):
-    """Profile service — self-service; a user edits only their own profile."""
-    return ProfileService(user_repo=user_repo)
-
-
-def get_research_api_adapter(x_research_api: str = Header(None)):
-    """Research-literature adapter — swappable provider.
-
-    Defaults to OpenAlex; send `X-Research-Api: mock` (or set
-    RESEARCH_API_MODE=mock) to use the offline stub. This is the exact
-    same plug-and-play pattern as the database adapters.
-    """
-    mode = x_research_api or RESEARCH_API_MODE
-    if mode == "mock":
-        return MockResearchApiAdapter()
-    return OpenAlexAdapter(mailto=OPENALEX_EMAIL or None)
-
-
-def get_research_service(
-    db=Depends(get_db_adapter),
-    api=Depends(get_research_api_adapter),
-    user_repo=Depends(get_user_adapter),
-):
-    # user_repo lets the service enrich project listings with owner profiles
-    return ResearchService(db, api, LogBrokerAdapter(), user_repo)
+def get_research_service(db=Depends(get_db_adapter)):
+    return ResearchService(db, ScholarAdapter(), LogBrokerAdapter())
 
 
 # =====================================================================
@@ -121,26 +87,20 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.on_event("startup")
 def startup_seed():
-    """Seed default users into every real backing store we can reach.
-
-    Both SQLite and Postgres are seeded so the UI's adapter dropdown
-    can flip between them without "user not found" errors. Failures
-    in one backend don't block the other.
-    """
+    """Seed default users into whichever DB the default adapter points to."""
     hasher = BcryptHasher()
     try:
-        seed_users(SQLiteUserAdapter(), hasher)
+        if DEFAULT_ADAPTER == "prod-postgres":
+            repo = PostgresUserAdapter(DATABASE_URL)
+        else:
+            repo = SQLiteUserAdapter()
+        seed_users(repo, hasher)
     except Exception as e:
-        print(f"[SEED] SQLite seed skipped — {e}", file=sys.stderr)
-    if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
-        try:
-            seed_users(PostgresUserAdapter(DATABASE_URL), hasher)
-        except Exception as e:
-            print(f"[SEED] Postgres seed skipped — {e}", file=sys.stderr)
+        print(f"[SEED] Warning: Could not seed users — {e}", file=sys.stderr)
 
 
 # =====================================================================
-# ROUTES — EXISTING (UNCHANGED)
+# ROUTES — AUTH & PROJECTS
 # =====================================================================
 
 @app.get("/")
@@ -181,16 +141,13 @@ async def create_project(
     auth: AuthService = Depends(get_auth_service),
     authorization: str = Header(None),
 ):
-    """Create a project owned by the authenticated caller.
-
-    The owner is taken from the JWT — there is no researcher-name input.
-    """
-    from ports import Project
+    """Extracts user from JWT token."""
+    from ports import Project, User
 
     user = _extract_user(authorization, auth)
 
     try:
-        proj = Project(title=data["title"])  # owner is set by the service
+        proj = Project(title=data["title"], researcher=data["researcher"])
         return service.create_project(proj, user).model_dump()
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -199,141 +156,7 @@ async def create_project(
 
 
 # =====================================================================
-# ROUTES — SAVED PAPERS (a project's collected literature)
-# =====================================================================
-
-@app.post("/api/projects/{ref_id}/papers")
-async def save_paper_to_project(
-    ref_id: str,
-    data: dict = Body(...),
-    service: ResearchService = Depends(get_research_service),
-    auth: AuthService = Depends(get_auth_service),
-    authorization: str = Header(None),
-):
-    """Save a searched paper to a project. Owner-only (enforced in the domain)."""
-    from ports import Paper
-
-    user = _extract_user(authorization, auth)
-    try:
-        paper = Paper(**data)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid paper payload: {e}")
-
-    try:
-        return service.save_paper_to_project(ref_id, paper, user).model_dump()
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.get("/api/projects/{ref_id}/papers")
-async def list_project_papers(
-    ref_id: str,
-    service: ResearchService = Depends(get_research_service),
-    auth: AuthService = Depends(get_auth_service),
-    authorization: str = Header(None),
-):
-    """List a project's saved papers. Any logged-in user may view (read-only)."""
-    _extract_user(authorization, auth)
-    try:
-        return [p.model_dump() for p in service.get_project_papers(ref_id)]
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@app.delete("/api/projects/{ref_id}/papers")
-async def remove_project_paper(
-    ref_id: str,
-    paper_id: str,  # query param — OpenAlex ids are URLs, so not a path segment
-    service: ResearchService = Depends(get_research_service),
-    auth: AuthService = Depends(get_auth_service),
-    authorization: str = Header(None),
-):
-    """Remove a saved paper from a project. Owner-only (enforced in the domain)."""
-    user = _extract_user(authorization, auth)
-    try:
-        service.remove_paper_from_project(ref_id, paper_id, user)
-        return {"removed": True, "paper_id": paper_id}
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-# =====================================================================
-# ROUTES — PROFILE (self-service; a user manages only their own)
-# =====================================================================
-
-@app.get("/api/profile")
-async def get_profile(
-    profile_svc: ProfileService = Depends(get_profile_service),
-    auth: AuthService = Depends(get_auth_service),
-    authorization: str = Header(None),
-):
-    """Return the logged-in user's own profile."""
-    user = _extract_user(authorization, auth)
-    try:
-        return profile_svc.get_my_profile(user)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@app.put("/api/profile")
-async def update_profile(
-    payload: dict = Body(...),
-    profile_svc: ProfileService = Depends(get_profile_service),
-    auth: AuthService = Depends(get_auth_service),
-    authorization: str = Header(None),
-):
-    """Update the logged-in user's OWN profile {full_name, institution, orcid_id}.
-
-    Keyed entirely off the JWT, so it can only ever touch the caller's
-    own record — admins cannot edit anyone else's profile.
-    """
-    user = _extract_user(authorization, auth)
-    try:
-        return profile_svc.update_my_profile(
-            caller=user,
-            full_name=payload.get("full_name", ""),
-            institution=payload.get("institution", ""),
-            orcid_id=payload.get("orcid_id", ""),
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-# =====================================================================
-# ROUTES — PAPER SEARCH (Pillar 3: external research literature)
-# =====================================================================
-
-@app.get("/api/papers/search")
-def search_papers(
-    q: str,
-    limit: int = 10,
-    service: ResearchService = Depends(get_research_service),
-    auth: AuthService = Depends(get_auth_service),
-    authorization: str = Header(None),
-):
-    """Search academic papers via the active research provider (OpenAlex).
-
-    Defined as a SYNC `def` on purpose: the underlying HTTP call to
-    OpenAlex is blocking, so FastAPI runs this handler in a worker thread
-    and the main async event loop stays free to serve other requests.
-    """
-    _extract_user(authorization, auth)  # any logged-in user may search
-    try:
-        results = service.search_papers(q, limit=limit)
-        return [p.model_dump() for p in results]
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        # Upstream provider failed (network, 429, 5xx, bad JSON)
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-# =====================================================================
-# ROUTES — v3: USER LIFECYCLE (NEW)
+# ROUTES — USER LIFECYCLE
 # =====================================================================
 
 @app.get("/api/users")
@@ -414,7 +237,7 @@ async def delete_user(
 
 
 # =====================================================================
-# DEBUG (UNCHANGED)
+# DEBUG
 # =====================================================================
 
 @app.get("/debug")
