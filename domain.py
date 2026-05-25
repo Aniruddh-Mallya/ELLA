@@ -74,6 +74,54 @@ class ResearchService:
         })
         return saved
 
+    # --- Saved papers: the bridge between search results and projects ---
+
+    def save_paper_to_project(self, project_ref_id: str, paper: Paper, user: User) -> Paper:
+        """Attach a searched paper to a project the caller OWNS.
+
+        A full snapshot of the paper is stored, so the project can list its
+        papers later straight from our database — no re-querying OpenAlex.
+        Only the project's owner may save; there is no role override.
+        """
+        project = self.db.fetch_by_ref(project_ref_id)
+        if project is None:
+            raise ValueError("Project not found.")
+        if project.owner_email != user.email:
+            raise PermissionError("Access Denied: Only the project owner can save papers.")
+
+        already_saved = any(p.paper_id == paper.paper_id for p in self.db.fetch_papers(project_ref_id))
+        if already_saved:
+            raise ValueError("This paper is already saved to this project.")
+
+        saved = self.db.save_paper(project_ref_id, paper)
+        self.broker.publish_event("PAPER_SAVED", {
+            "project": project_ref_id,
+            "paper_id": saved.paper_id,
+        })
+        return saved
+
+    def get_project_papers(self, project_ref_id: str) -> List[Paper]:
+        """List a project's saved papers. Open to any logged-in user (read-only)."""
+        if self.db.fetch_by_ref(project_ref_id) is None:
+            raise ValueError("Project not found.")
+        return self.db.fetch_papers(project_ref_id)
+
+    def remove_paper_from_project(self, project_ref_id: str, paper_id: str, user: User) -> None:
+        """Remove a saved paper from a project the caller OWNS."""
+        project = self.db.fetch_by_ref(project_ref_id)
+        if project is None:
+            raise ValueError("Project not found.")
+        if project.owner_email != user.email:
+            raise PermissionError("Access Denied: Only the project owner can remove papers.")
+
+        removed = self.db.remove_paper(project_ref_id, paper_id)
+        if not removed:
+            raise ValueError("Paper not found in this project.")
+        self.broker.publish_event("PAPER_REMOVED", {
+            "project": project_ref_id,
+            "paper_id": paper_id,
+        })
+
 
 class AuthService:
     """
@@ -107,7 +155,7 @@ class AuthService:
             raise PermissionError("Invalid credentials.")
 
         token = self.token_provider.encode({"email": record["email"], "role": record["role"]})
-        return {"token": token, "role": record["role"]}
+        return {"token": token, "role": record["role"], "email": record["email"]}
 
     def authorize(self, token: str) -> Optional[User]:
         """Decode a JWT and return the User, or None."""

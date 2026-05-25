@@ -14,15 +14,43 @@
         const { useState, useEffect } = React;
         const API_BASE_URL = window.location.origin;
 
+        // Save-to-project control shown on each search result.
+        // Holds its own selected-project state so cards don't fight each other.
+        const SaveToProjectControl = ({ paper, myProjects, onSave }) => {
+            const [selected, setSelected] = useState('');
+            if (myProjects.length === 0) {
+                return <p className="text-xs text-gray-400 mt-3 italic">Create a project first to save papers.</p>;
+            }
+            return (
+                <div className="flex gap-2 mt-3">
+                    <select
+                        value={selected}
+                        onChange={(e) => setSelected(e.target.value)}
+                        className="flex-1 p-2 border rounded-lg text-xs bg-gray-50 outline-none focus:ring-2 focus:ring-blue-400"
+                    >
+                        <option value="">Save to one of my projects…</option>
+                        {myProjects.map(p => <option key={p.reference_id} value={p.reference_id}>{p.title}</option>)}
+                    </select>
+                    <button
+                        onClick={() => onSave(selected, paper)}
+                        className="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-green-700 transition shrink-0"
+                    >Save</button>
+                </div>
+            );
+        };
+
         const App = () => {
             const [token, setToken] = useState(localStorage.getItem('token'));
             const [role, setRole] = useState(localStorage.getItem('role'));
+            const [email, setEmail] = useState(localStorage.getItem('email'));
             const [projects, setProjects] = useState([]);
             const [users, setUsers] = useState([]);
             const [papers, setPapers] = useState([]);
             const [searchQuery, setSearchQuery] = useState('');
             const [hasSearched, setHasSearched] = useState(false);
             const [profile, setProfile] = useState(null);
+            const [expandedProject, setExpandedProject] = useState(null);
+            const [projectPapers, setProjectPapers] = useState({});
             const [isLoading, setIsLoading] = useState(false);
             const [error, setError] = useState(null);
             const [success, setSuccess] = useState(null);
@@ -54,7 +82,8 @@
                 if (data) {
                     localStorage.setItem('token', data.token);
                     localStorage.setItem('role', data.role);
-                    setToken(data.token); setRole(data.role);
+                    localStorage.setItem('email', data.email);
+                    setToken(data.token); setRole(data.role); setEmail(data.email);
                 }
             };
 
@@ -92,13 +121,44 @@
                 }
             };
 
+            const loadProjectPapers = async (refId) => {
+                const data = await apiCall(`/api/projects/${refId}/papers`);
+                setProjectPapers(prev => ({ ...prev, [refId]: data || [] }));
+            };
+
+            const toggleProject = (refId) => {
+                if (expandedProject === refId) { setExpandedProject(null); return; }
+                setExpandedProject(refId);
+                loadProjectPapers(refId);
+            };
+
+            const handleSavePaper = async (projectRefId, paper) => {
+                if (!projectRefId) { setError('Pick a project first.'); return; }
+                const res = await apiCall(`/api/projects/${projectRefId}/papers`, 'POST', paper);
+                if (res) {
+                    setSuccess(`Saved "${paper.title}" to your project.`);
+                    if (expandedProject === projectRefId) loadProjectPapers(projectRefId);
+                }
+            };
+
+            const handleRemovePaper = async (projectRefId, paperId) => {
+                const res = await apiCall(`/api/projects/${projectRefId}/papers?paper_id=${encodeURIComponent(paperId)}`, 'DELETE');
+                if (res) {
+                    setSuccess('Paper removed from project.');
+                    loadProjectPapers(projectRefId);
+                }
+            };
+
             useEffect(() => {
                 if (token) {
                     if (activeTab === 'projects') loadProjects();
+                    if (activeTab === 'search') loadProjects();  // populate the save-to-project picker
                     if (activeTab === 'users' && role === 'admin') loadUsers();
                     if (activeTab === 'profile') loadProfile();
                 }
             }, [token, adapterMode, activeTab]);
+
+            const myProjects = projects.filter(p => p.owner_email === email);
 
             const handleChangeRole = async (email, currentRole) => {
                 const newRole = currentRole === 'admin' ? 'researcher' : 'admin';
@@ -168,7 +228,7 @@
 
                     <header className="flex justify-between items-end mb-8 border-b pb-4">
                         <h1 className="text-5xl font-black tracking-tighter text-gray-900">Research Portal</h1>
-                        <button onClick={() => { localStorage.clear(); setToken(null); setRole(null); }} className="text-red-500 font-bold hover:underline mb-1 text-sm uppercase">Logout ({role})</button>
+                        <button onClick={() => { localStorage.clear(); setToken(null); setRole(null); setEmail(null); }} className="text-red-500 font-bold hover:underline mb-1 text-sm uppercase">Logout ({role})</button>
                     </header>
 
                     {/* Tab Navigation */}
@@ -216,15 +276,50 @@
                                 <h2 className="text-xl font-bold text-gray-800">Inventory {isLoading && <span className="text-xs text-blue-500 animate-pulse ml-2">...WIRING...</span>}</h2>
                                 {projects.length === 0 && !isLoading ? (
                                     <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-gray-100 italic text-gray-400">No projects in {adapterMode}.</div>
-                                ) : projects.map(p => (
-                                    <div key={p.reference_id} className="bg-white p-5 rounded-2xl border shadow-sm flex justify-between items-center hover:shadow-md transition">
-                                        <div>
-                                            <h4 className="font-bold text-xl text-gray-900">{p.title}</h4>
-                                            <p className="text-gray-400 text-sm">PI: {p.owner_name}{p.owner_institution ? ` · ${p.owner_institution}` : ''}</p>
+                                ) : projects.map(p => {
+                                    const isOpen = expandedProject === p.reference_id;
+                                    const isOwner = p.owner_email === email;
+                                    const saved = projectPapers[p.reference_id];
+                                    return (
+                                    <div key={p.reference_id} className="bg-white rounded-2xl border shadow-sm hover:shadow-md transition">
+                                        <div onClick={() => toggleProject(p.reference_id)} className="p-5 flex justify-between items-center cursor-pointer">
+                                            <div>
+                                                <h4 className="font-bold text-xl text-gray-900">{isOpen ? '▾' : '▸'} {p.title}</h4>
+                                                <p className="text-gray-400 text-sm">PI: {p.owner_name}{p.owner_institution ? ` · ${p.owner_institution}` : ''}</p>
+                                            </div>
+                                            <span className="bg-blue-50 text-blue-600 px-4 py-1.5 rounded-full text-[10px] font-black uppercase border border-blue-100">{p.status}</span>
                                         </div>
-                                        <span className="bg-blue-50 text-blue-600 px-4 py-1.5 rounded-full text-[10px] font-black uppercase border border-blue-100">{p.status}</span>
+                                        {isOpen && (
+                                            <div className="border-t px-5 py-4 bg-gray-50/50 rounded-b-2xl">
+                                                <h5 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Saved Papers</h5>
+                                                {saved === undefined ? (
+                                                    <p className="text-gray-400 italic text-sm py-2">Loading…</p>
+                                                ) : saved.length === 0 ? (
+                                                    <p className="text-gray-400 italic text-sm py-2">No papers saved to this project yet.</p>
+                                                ) : saved.map(sp => (
+                                                    <div key={sp.paper_id} className="flex justify-between items-start gap-4 bg-white p-3 rounded-xl border mb-2">
+                                                        <div>
+                                                            <p className="font-bold text-sm text-gray-900 leading-snug">
+                                                                {sp.url ? <a href={sp.url} target="_blank" rel="noreferrer" className="hover:text-blue-600 hover:underline">{sp.title}</a> : sp.title}
+                                                            </p>
+                                                            <p className="text-gray-500 text-xs mt-0.5">
+                                                                {(sp.authors || []).slice(0, 3).join(', ')}{sp.authors && sp.authors.length > 3 ? ' et al.' : ''}
+                                                                {sp.year ? ` · ${sp.year}` : ''}{sp.venue ? ` · ${sp.venue}` : ''}
+                                                            </p>
+                                                        </div>
+                                                        {isOwner && (
+                                                            <button
+                                                                onClick={() => handleRemovePaper(p.reference_id, sp.paper_id)}
+                                                                className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg text-xs font-bold border border-red-200 hover:bg-red-100 transition shrink-0"
+                                                            >Remove</button>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </>
                     )}
@@ -265,6 +360,7 @@
                                         </p>
                                         {p.abstract && <p className="text-gray-600 text-sm mt-3 line-clamp-3">{p.abstract}</p>}
                                         {p.open_access_pdf && <a href={p.open_access_pdf} target="_blank" rel="noreferrer" className="inline-block mt-3 text-xs font-bold text-green-600 hover:underline">📄 Open Access PDF</a>}
+                                        <SaveToProjectControl paper={p} myProjects={myProjects} onSave={handleSavePaper} />
                                     </div>
                                 ))}
                             </div>

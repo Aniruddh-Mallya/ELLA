@@ -1,8 +1,9 @@
 import jwt
+import json
 import httpx
 import datetime
 from typing import List, Dict, Optional
-from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy import create_engine, Column, Integer, String, UniqueConstraint
 from sqlalchemy.orm import sessionmaker, declarative_base
 from ports import (
     ProjectDatabasePort, TokenProviderPort, ResearchApiPort,
@@ -23,6 +24,62 @@ class DBProject(Base):
     ref_id = Column(String, unique=True)
     title = Column(String)
     owner_email = Column(String)  # links the project to a real user (by email)
+
+
+class DBSavedPaper(Base):
+    """A paper snapshot saved against a project (closes the search→project loop)."""
+    __tablename__ = "saved_papers"
+    id = Column(Integer, primary_key=True)
+    project_ref_id = Column(String, index=True, nullable=False)  # links to DBProject.ref_id
+    paper_id = Column(String, nullable=False)                    # provider id (e.g. OpenAlex URL)
+    title = Column(String)
+    authors = Column(String)          # JSON-encoded list[str] (a column can't hold a list)
+    year = Column(Integer, nullable=True)
+    venue = Column(String, nullable=True)
+    citation_count = Column(Integer, default=0)
+    abstract = Column(String, nullable=True)
+    url = Column(String, nullable=True)
+    open_access_pdf = Column(String, nullable=True)
+    source = Column(String, default="unknown")
+    # the same paper can't be saved twice to the same project
+    __table_args__ = (UniqueConstraint("project_ref_id", "paper_id", name="uq_project_paper"),)
+
+
+def _row_to_paper(row: "DBSavedPaper") -> Paper:
+    """Map a stored row back into our provider-agnostic Paper model."""
+    try:
+        authors = json.loads(row.authors) if row.authors else []
+    except (ValueError, TypeError):
+        authors = []
+    return Paper(
+        paper_id=row.paper_id,
+        title=row.title or "(untitled)",
+        authors=authors,
+        year=row.year,
+        venue=row.venue,
+        citation_count=row.citation_count or 0,
+        abstract=row.abstract,
+        url=row.url,
+        open_access_pdf=row.open_access_pdf,
+        source=row.source or "unknown",
+    )
+
+
+def _new_saved_row(project_ref_id: str, paper: Paper) -> "DBSavedPaper":
+    """Build a storable row from a Paper (snapshot of all display fields)."""
+    return DBSavedPaper(
+        project_ref_id=project_ref_id,
+        paper_id=paper.paper_id,
+        title=paper.title,
+        authors=json.dumps(paper.authors or []),
+        year=paper.year,
+        venue=paper.venue,
+        citation_count=paper.citation_count or 0,
+        abstract=paper.abstract,
+        url=paper.url,
+        open_access_pdf=paper.open_access_pdf,
+        source=paper.source,
+    )
 
 
 class DBUser(Base):
@@ -60,6 +117,36 @@ class SQLiteProjectAdapter(ProjectDatabasePort):
             items = db.query(DBProject).all()
             return [Project(reference_id=i.ref_id, title=i.title, owner_email=i.owner_email or "") for i in items]
 
+    def fetch_by_ref(self, reference_id: str) -> Optional[Project]:
+        with self.SessionLocal() as db:
+            i = db.query(DBProject).filter(DBProject.ref_id == reference_id).first()
+            if i is None:
+                return None
+            return Project(reference_id=i.ref_id, title=i.title, owner_email=i.owner_email or "")
+
+    def save_paper(self, project_ref_id: str, paper: Paper) -> Paper:
+        with self.SessionLocal() as db:
+            db.add(_new_saved_row(project_ref_id, paper))
+            db.commit()
+            return paper
+
+    def fetch_papers(self, project_ref_id: str) -> List[Paper]:
+        with self.SessionLocal() as db:
+            rows = db.query(DBSavedPaper).filter(DBSavedPaper.project_ref_id == project_ref_id).all()
+            return [_row_to_paper(r) for r in rows]
+
+    def remove_paper(self, project_ref_id: str, paper_id: str) -> bool:
+        with self.SessionLocal() as db:
+            row = db.query(DBSavedPaper).filter(
+                DBSavedPaper.project_ref_id == project_ref_id,
+                DBSavedPaper.paper_id == paper_id,
+            ).first()
+            if row is None:
+                return False
+            db.delete(row)
+            db.commit()
+            return True
+
 
 class PostgresProjectAdapter(ProjectDatabasePort):
     """Renamed from PostgresAdapter for clarity."""
@@ -80,16 +167,61 @@ class PostgresProjectAdapter(ProjectDatabasePort):
             items = db.query(DBProject).all()
             return [Project(reference_id=i.ref_id, title=i.title, owner_email=i.owner_email or "") for i in items]
 
+    def fetch_by_ref(self, reference_id: str) -> Optional[Project]:
+        with self.SessionLocal() as db:
+            i = db.query(DBProject).filter(DBProject.ref_id == reference_id).first()
+            if i is None:
+                return None
+            return Project(reference_id=i.ref_id, title=i.title, owner_email=i.owner_email or "")
+
+    def save_paper(self, project_ref_id: str, paper: Paper) -> Paper:
+        with self.SessionLocal() as db:
+            db.add(_new_saved_row(project_ref_id, paper))
+            db.commit()
+            return paper
+
+    def fetch_papers(self, project_ref_id: str) -> List[Paper]:
+        with self.SessionLocal() as db:
+            rows = db.query(DBSavedPaper).filter(DBSavedPaper.project_ref_id == project_ref_id).all()
+            return [_row_to_paper(r) for r in rows]
+
+    def remove_paper(self, project_ref_id: str, paper_id: str) -> bool:
+        with self.SessionLocal() as db:
+            row = db.query(DBSavedPaper).filter(
+                DBSavedPaper.project_ref_id == project_ref_id,
+                DBSavedPaper.paper_id == paper_id,
+            ).first()
+            if row is None:
+                return False
+            db.delete(row)
+            db.commit()
+            return True
+
 
 class MockProjectAdapter(ProjectDatabasePort):
     """Renamed from MockDBAdapter for clarity."""
     def __init__(self):
         self.projects = []
+        self.papers: Dict[str, List[Paper]] = {}  # project_ref_id -> [Paper, ...]
     def save(self, p):
         self.projects.append(p)
         return p
     def fetch_all(self):
         return self.projects
+    def fetch_by_ref(self, reference_id):
+        return next((p for p in self.projects if p.reference_id == reference_id), None)
+    def save_paper(self, project_ref_id, paper):
+        self.papers.setdefault(project_ref_id, []).append(paper)
+        return paper
+    def fetch_papers(self, project_ref_id):
+        return list(self.papers.get(project_ref_id, []))
+    def remove_paper(self, project_ref_id, paper_id):
+        items = self.papers.get(project_ref_id, [])
+        for idx, p in enumerate(items):
+            if p.paper_id == paper_id:
+                items.pop(idx)
+                return True
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════════

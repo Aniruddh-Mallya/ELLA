@@ -12,11 +12,26 @@ class MockDBAdapter(ProjectDatabasePort):
     """Pillar 1 Mock: Simulation for SQLite/Postgres."""
     def __init__(self):
         self.projects = []
+        self.papers: Dict[str, List[Paper]] = {}
     def save(self, project: Project) -> Project:
         self.projects.append(project)
         return project
     def fetch_all(self) -> List[Project]:
         return self.projects
+    def fetch_by_ref(self, reference_id: str) -> Optional[Project]:
+        return next((p for p in self.projects if p.reference_id == reference_id), None)
+    def save_paper(self, project_ref_id: str, paper: Paper) -> Paper:
+        self.papers.setdefault(project_ref_id, []).append(paper)
+        return paper
+    def fetch_papers(self, project_ref_id: str) -> List[Paper]:
+        return list(self.papers.get(project_ref_id, []))
+    def remove_paper(self, project_ref_id: str, paper_id: str) -> bool:
+        items = self.papers.get(project_ref_id, [])
+        for idx, p in enumerate(items):
+            if p.paper_id == paper_id:
+                items.pop(idx)
+                return True
+        return False
 
 class MockApiAdapter(ResearchApiPort):
     """Pillar 3 Mock: Simulation for the research-literature API."""
@@ -175,6 +190,115 @@ def test_search_papers_rejects_bad_limit():
     service = _research_service()
     with pytest.raises(ValueError, match="limit must be between"):
         service.search_papers("valid query", limit=100)
+
+
+# --- 4b. SAVED PAPERS (search → project loop) ---
+
+def _owned_project(service, owner_email):
+    """Create a project owned by owner_email and return it."""
+    user = User(email=owner_email, role="researcher")
+    return service.create_project(Project(title="Quantum Research Lab"), user)
+
+
+def test_owner_can_save_paper_to_project():
+    db = MockDBAdapter()
+    broker = MockBrokerAdapter()
+    service = _research_service(db=db, broker=broker)
+    owner = User(email="ada@x.com", role="researcher")
+    project = _owned_project(service, "ada@x.com")
+
+    paper = Paper(paper_id="W1", title="On Computable Numbers", source="OpenAlex")
+    service.save_paper_to_project(project.reference_id, paper, owner)
+
+    saved = service.get_project_papers(project.reference_id)
+    assert [p.paper_id for p in saved] == ["W1"]
+    assert any(e["type"] == "PAPER_SAVED" for e in broker.events_sent)
+
+
+def test_non_owner_cannot_save_paper():
+    service = _research_service()
+    _owned_project(service, "ada@x.com")
+    project = service.get_all_projects()[0]
+
+    intruder = User(email="eve@x.com", role="researcher")
+    paper = Paper(paper_id="W1", title="Sneaky Paper", source="OpenAlex")
+    with pytest.raises(PermissionError, match="Only the project owner"):
+        service.save_paper_to_project(project.reference_id, paper, intruder)
+
+
+def test_admin_cannot_save_to_someone_elses_project():
+    """Ownership is the only gate — admin gets no override."""
+    service = _research_service()
+    _owned_project(service, "ada@x.com")
+    project = service.get_all_projects()[0]
+
+    admin = User(email="admin@x.com", role="admin")
+    paper = Paper(paper_id="W1", title="Admin Overreach", source="OpenAlex")
+    with pytest.raises(PermissionError, match="Only the project owner"):
+        service.save_paper_to_project(project.reference_id, paper, admin)
+
+
+def test_cannot_save_same_paper_twice():
+    service = _research_service()
+    owner = User(email="ada@x.com", role="researcher")
+    project = _owned_project(service, "ada@x.com")
+
+    paper = Paper(paper_id="W1", title="Dup", source="OpenAlex")
+    service.save_paper_to_project(project.reference_id, paper, owner)
+    with pytest.raises(ValueError, match="already saved"):
+        service.save_paper_to_project(project.reference_id, paper, owner)
+
+
+def test_save_to_missing_project_raises():
+    service = _research_service()
+    owner = User(email="ada@x.com", role="researcher")
+    paper = Paper(paper_id="W1", title="Orphan", source="OpenAlex")
+    with pytest.raises(ValueError, match="Project not found"):
+        service.save_paper_to_project("does-not-exist", paper, owner)
+
+
+def test_owner_can_remove_saved_paper():
+    db = MockDBAdapter()
+    broker = MockBrokerAdapter()
+    service = _research_service(db=db, broker=broker)
+    owner = User(email="ada@x.com", role="researcher")
+    project = _owned_project(service, "ada@x.com")
+    service.save_paper_to_project(project.reference_id, Paper(paper_id="W1", title="X"), owner)
+
+    service.remove_paper_from_project(project.reference_id, "W1", owner)
+    assert service.get_project_papers(project.reference_id) == []
+    assert any(e["type"] == "PAPER_REMOVED" for e in broker.events_sent)
+
+
+def test_non_owner_cannot_remove_paper():
+    service = _research_service()
+    owner = User(email="ada@x.com", role="researcher")
+    project = _owned_project(service, "ada@x.com")
+    service.save_paper_to_project(project.reference_id, Paper(paper_id="W1", title="X"), owner)
+
+    intruder = User(email="eve@x.com", role="researcher")
+    with pytest.raises(PermissionError, match="Only the project owner"):
+        service.remove_paper_from_project(project.reference_id, "W1", intruder)
+
+
+def test_remove_missing_paper_raises():
+    service = _research_service()
+    owner = User(email="ada@x.com", role="researcher")
+    project = _owned_project(service, "ada@x.com")
+    with pytest.raises(ValueError, match="Paper not found"):
+        service.remove_paper_from_project(project.reference_id, "ghost", owner)
+
+
+def test_listing_papers_is_open_and_isolated_per_project():
+    service = _research_service()
+    owner = User(email="ada@x.com", role="researcher")
+    p1 = _owned_project(service, "ada@x.com")
+    p2 = service.create_project(Project(title="Second Lab"), owner)
+    service.save_paper_to_project(p1.reference_id, Paper(paper_id="W1", title="A"), owner)
+
+    # Any logged-in user can read; papers stay scoped to their own project
+    assert [p.paper_id for p in service.get_project_papers(p1.reference_id)] == ["W1"]
+    assert service.get_project_papers(p2.reference_id) == []
 
 
 # --- 5. RESEARCHER PROFILE (self-service) ---

@@ -40,8 +40,8 @@ That starts two containers:
 On first boot the app seeds default users into **both** SQLite and Postgres so the runtime adapter switch works without re-seeding.
 
 > **Upgrading from an older build?** The database schema changed (researcher
-> profiles + project ownership). Reset your local data once so the new tables
-> are created cleanly:
+> profiles, project ownership, and saved papers). Reset your local data once so
+> the new tables are created cleanly:
 > ```bash
 > docker-compose down -v     # drops the Postgres volume
 > del data\research.db       # Windows: remove the SQLite file (rm on macOS/Linux)
@@ -67,6 +67,21 @@ Search the global academic literature from the **Paper Search** tab (available t
 curl "http://localhost:8002/api/papers/search?q=quantum%20computing&limit=5" \
   -H "Authorization: Bearer <your-token>"
 ```
+
+## Saving Papers to Projects
+
+Closes the loop between search and projects: a researcher can save any search result into one of their own projects, and each project lists everything saved to it.
+
+- **Save** a paper: `POST /api/projects/{ref_id}/papers` — body is the paper object from the search results
+- **List** a project's saved papers: `GET /api/projects/{ref_id}/papers`
+- **Remove** a saved paper: `DELETE /api/projects/{ref_id}/papers?paper_id=<id>`
+
+Rules:
+- **Owner-only writes:** only the researcher who owns a project can save or remove its papers — there is no admin override. Viewing a project's saved papers is open to any logged-in user.
+- **Full snapshots:** the complete paper (title, authors, year, venue, citations, abstract, links) is stored, so a project displays its papers straight from the database without re-querying OpenAlex.
+- The same paper can't be saved twice to the same project.
+
+In the UI: each search result has a **Save to project** dropdown (listing only your own projects); open a project on the **Projects** tab to reveal its saved papers, each with a **Remove** button shown only to the owner.
 
 ## Researcher Profiles & Project Ownership
 

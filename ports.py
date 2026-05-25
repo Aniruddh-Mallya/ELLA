@@ -53,6 +53,24 @@ class ProjectDatabasePort(ABC):
     @abstractmethod
     def fetch_all(self) -> List[Project]: pass
 
+    # --- single-project lookup (needed to resolve ownership) ---
+    @abstractmethod
+    def fetch_by_ref(self, reference_id: str) -> Optional[Project]: pass
+    # Returns the project with this reference_id, or None if not found.
+
+    # --- saved papers (a project's collected literature) ---
+    @abstractmethod
+    def save_paper(self, project_ref_id: str, paper: "Paper") -> "Paper": pass
+    # Stores a full snapshot of the paper against the project.
+
+    @abstractmethod
+    def fetch_papers(self, project_ref_id: str) -> List["Paper"]: pass
+    # Returns every paper snapshot saved to this project.
+
+    @abstractmethod
+    def remove_paper(self, project_ref_id: str, paper_id: str) -> bool: pass
+    # Returns True if a matching paper was found and removed, False otherwise.
+
 class UserRepositoryPort(ABC):
     """Port for user persistence — mirrors ProjectDatabasePort symmetry."""
     @abstractmethod

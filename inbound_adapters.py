@@ -199,6 +199,69 @@ async def create_project(
 
 
 # =====================================================================
+# ROUTES — SAVED PAPERS (a project's collected literature)
+# =====================================================================
+
+@app.post("/api/projects/{ref_id}/papers")
+async def save_paper_to_project(
+    ref_id: str,
+    data: dict = Body(...),
+    service: ResearchService = Depends(get_research_service),
+    auth: AuthService = Depends(get_auth_service),
+    authorization: str = Header(None),
+):
+    """Save a searched paper to a project. Owner-only (enforced in the domain)."""
+    from ports import Paper
+
+    user = _extract_user(authorization, auth)
+    try:
+        paper = Paper(**data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid paper payload: {e}")
+
+    try:
+        return service.save_paper_to_project(ref_id, paper, user).model_dump()
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/projects/{ref_id}/papers")
+async def list_project_papers(
+    ref_id: str,
+    service: ResearchService = Depends(get_research_service),
+    auth: AuthService = Depends(get_auth_service),
+    authorization: str = Header(None),
+):
+    """List a project's saved papers. Any logged-in user may view (read-only)."""
+    _extract_user(authorization, auth)
+    try:
+        return [p.model_dump() for p in service.get_project_papers(ref_id)]
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/projects/{ref_id}/papers")
+async def remove_project_paper(
+    ref_id: str,
+    paper_id: str,  # query param — OpenAlex ids are URLs, so not a path segment
+    service: ResearchService = Depends(get_research_service),
+    auth: AuthService = Depends(get_auth_service),
+    authorization: str = Header(None),
+):
+    """Remove a saved paper from a project. Owner-only (enforced in the domain)."""
+    user = _extract_user(authorization, auth)
+    try:
+        service.remove_paper_from_project(ref_id, paper_id, user)
+        return {"removed": True, "paper_id": paper_id}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# =====================================================================
 # ROUTES — PROFILE (self-service; a user manages only their own)
 # =====================================================================
 
