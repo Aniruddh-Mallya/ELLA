@@ -1,10 +1,41 @@
-version: '3.8'
 services:
+  postgres:
+    image: postgres:16
+    container_name: rms_postgres
+    environment:
+      POSTGRES_USER: rmsadmin
+      POSTGRES_PASSWORD: rmsadmin
+      POSTGRES_DB: rmsdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - rms_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rmsadmin -d rmsdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+
   rms-api:
     build: .
     container_name: rms_consolidated_service
     ports:
-      - "8002:8000"
+      - "8002:8002"
     volumes:
       - ./data:/app/data
+    environment:
+      DEFAULT_ADAPTER_MODE: prod-sqlite
+      DATABASE_URL: postgresql+psycopg2://rmsadmin:rmsadmin@postgres:5432/rmsdb
+      JWT_SECRET: rms_local_secret_2026
+      # Paper search: "openalex" (real API) or "mock" (offline stub)
+      RESEARCH_API_MODE: openalex
+      # Optional: your email puts requests in OpenAlex's faster "polite pool"
+      OPENALEX_EMAIL: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: always
+
+volumes:
+  rms_pgdata:
