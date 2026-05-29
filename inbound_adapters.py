@@ -52,22 +52,22 @@ RESEARCHER_PASSWORD = os.getenv("RESEARCHER_PASSWORD")
 # DEPENDENCY FACTORIES
 # =====================================================================
 
-def get_db_adapter(x_adapter_mode: str = Header(None)):
-    """Project database adapter — unchanged logic, renamed classes."""
-    mode = x_adapter_mode or DEFAULT_ADAPTER
-    if mode == "dev-mock":
+def get_db_adapter():
+    """Project database adapter — chosen by the operator via DEFAULT_ADAPTER_MODE,
+    never by the client. Swapping backends is a deployment decision, not a
+    per-request one."""
+    if DEFAULT_ADAPTER == "dev-mock":
         return MockProjectAdapter()
-    if mode == "prod-postgres":
+    if DEFAULT_ADAPTER == "prod-postgres":
         return PostgresProjectAdapter(DATABASE_URL)
     return SQLiteProjectAdapter()
 
 
-def get_user_adapter(x_adapter_mode: str = Header(None)):
+def get_user_adapter():
     """User repository adapter — mirrors get_db_adapter() exactly."""
-    mode = x_adapter_mode or DEFAULT_ADAPTER
-    if mode == "dev-mock":
+    if DEFAULT_ADAPTER == "dev-mock":
         return MockUserAdapter()
-    if mode == "prod-postgres":
+    if DEFAULT_ADAPTER == "prod-postgres":
         return PostgresUserAdapter(DATABASE_URL)
     return SQLiteUserAdapter()
 
@@ -443,29 +443,3 @@ async def delete_user(
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-# =====================================================================
-# DEBUG (UNCHANGED)
-# =====================================================================
-
-@app.get("/debug")
-async def debug_info():
-    """Debug endpoint for Azure troubleshooting."""
-    import platform
-    info = {
-        "python_version": platform.python_version(),
-        "default_adapter": DEFAULT_ADAPTER,
-        "database_url_set": bool(os.getenv("DATABASE_URL")),
-        "jwt_secret_set": bool(os.getenv("JWT_SECRET")),
-    }
-    if DEFAULT_ADAPTER == "prod-postgres" and os.getenv("DATABASE_URL"):
-        try:
-            from sqlalchemy import create_engine, text
-            engine = create_engine(DATABASE_URL)
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            info["postgres_connection"] = "connected OK"
-        except Exception as e:
-            info["postgres_connection"] = f"FAILED: {e}"
-    return info

@@ -26,7 +26,14 @@ Browser  →  FastAPI (inbound adapter)
 
 ## Run Locally
 
-Bring up the API and a local Postgres in one command:
+First, create your local secrets file (it's gitignored, so your passwords never get committed):
+
+```bash
+cp .env.example .env        # PowerShell: Copy-Item .env.example .env
+# then edit .env and set ADMIN_PASSWORD, RESEARCHER_PASSWORD, and JWT_SECRET
+```
+
+Then bring up the API and a local Postgres in one command:
 
 ```bash
 docker-compose up --build
@@ -48,12 +55,10 @@ On first boot the app seeds default users into **both** SQLite and Postgres so t
 > docker-compose up --build
 > ```
 
-Default login credentials:
-
-| Role | Email | Password |
-|---|---|---|
-| Admin | admin@rms.com | admin123 |
-| Researcher | researcher@rms.com | researcher123 |
+**Login credentials:** there are no built-in passwords. On first boot the app
+creates the admin and researcher accounts from the values you set in `.env`
+(`ADMIN_EMAIL` / `ADMIN_PASSWORD` and `RESEARCHER_EMAIL` / `RESEARCHER_PASSWORD`).
+An account is only created if its password is set — log in with whatever you chose.
 
 ## Paper Search
 
@@ -90,25 +95,33 @@ In the UI: each search result has a **Save to project** dropdown (listing only y
   - `PUT /api/profile` — update your own profile `{full_name, institution, orcid_id}`
 - **Project ownership:** a project automatically belongs to whoever creates it (taken from the login token — there's no typed-in name). Project listings show the owner's real name and institution, falling back to their email if no name is set yet.
 
-## Switching Database Adapters at Runtime
+## Choosing the Database
 
-The UI exposes a dropdown that controls which adapter handles the next request via the `X-Adapter-Mode` header:
+Which backing store the app uses is an **operator decision**, set with the
+`DEFAULT_ADAPTER_MODE` environment variable — not something end users can change.
+The whole app runs on whichever adapter you pick:
 
-- `prod-sqlite` — Local SQLite file at `./data/research.db` (default at startup)
+- `prod-sqlite` — Local SQLite file at `./data/research.db` (default)
 - `prod-postgres` — Local Postgres container
 - `dev-mock` — In-memory mock, useful for tests
 
-No restart needed — flip the dropdown and the next API call uses the new backing store.
+To swap, change `DEFAULT_ADAPTER_MODE` in your `.env` (or `docker-compose.yml`) and
+restart. It's the same swappable hexagonal pattern as the paper-search provider —
+just selected by configuration rather than per request.
 
 ## Environment Variables
 
-Set in [docker-compose.yml](docker-compose.yml). For running outside Docker, the defaults in [inbound_adapters.py](inbound_adapters.py) are used.
+Secrets live in a gitignored `.env` file (copy `.env.example` to start); `docker-compose.yml` reads them. For running outside Docker, the non-secret defaults in [inbound_adapters.py](inbound_adapters.py) are used.
 
 | Variable | Purpose | Default |
 |---|---|---|
+| `ADMIN_EMAIL` | Email for the seeded admin account | `admin@rms.com` |
+| `ADMIN_PASSWORD` | Admin password — account only seeds if set | _(unset — no default)_ |
+| `RESEARCHER_EMAIL` | Email for the seeded researcher account | `researcher@rms.com` |
+| `RESEARCHER_PASSWORD` | Researcher password — account only seeds if set | _(unset)_ |
+| `JWT_SECRET` | JWT signing key | _(unset → random key per boot; set it so logins survive restarts)_ |
 | `DATABASE_URL` | Postgres connection string | `postgresql+psycopg2://rmsadmin:rmsadmin@postgres:5432/rmsdb` |
-| `JWT_SECRET` | JWT signing key | `rms_local_secret_2026` |
-| `DEFAULT_ADAPTER_MODE` | DB adapter used when no header is sent | `prod-sqlite` |
+| `DEFAULT_ADAPTER_MODE` | Which database the whole app uses: `prod-sqlite`, `prod-postgres`, or `dev-mock` | `prod-sqlite` |
 | `RESEARCH_API_MODE` | Paper-search provider: `openalex` or `mock` | `openalex` |
 | `OPENALEX_EMAIL` | Optional contact email for OpenAlex's faster polite pool | `""` |
 
@@ -138,7 +151,7 @@ The app follows the **Hexagonal Architecture** pattern with strict layer separat
 - **Ports** ([ports.py](ports.py)) — Abstract interfaces that define what the domain needs
 - **Domain** ([domain.py](domain.py)) — Pure business logic with zero infrastructure imports
 - **Inbound Adapters** ([inbound_adapters.py](inbound_adapters.py)) — FastAPI REST API + dependency factories
-- **Outbound Adapters** ([outbound_adapters.py](outbound_adapters.py)) — SQLite, PostgreSQL, JWT, Bcrypt, Scholar API
+- **Outbound Adapters** ([outbound_adapters.py](outbound_adapters.py)) — SQLite, PostgreSQL, JWT, Bcrypt, OpenAlex paper search
 
 ### Adapter Symmetry
 

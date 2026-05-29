@@ -54,13 +54,12 @@
             const [isLoading, setIsLoading] = useState(false);
             const [error, setError] = useState(null);
             const [success, setSuccess] = useState(null);
-            const [adapterMode, setAdapterMode] = useState('prod-postgres');
             const [activeTab, setActiveTab] = useState('projects');
 
             const apiCall = async (endpoint, method = 'GET', body = null) => {
                 setError(null);
                 setSuccess(null);
-                const headers = { 'Content-Type': 'application/json', 'X-Adapter-Mode': adapterMode };
+                const headers = { 'Content-Type': 'application/json' };
                 if (token) headers['Authorization'] = `Bearer ${token}`;
                 try {
                     const resp = await fetch(`${API_BASE_URL}${endpoint}`, { method, headers, body: body ? JSON.stringify(body) : null });
@@ -156,7 +155,7 @@
                     if (activeTab === 'users' && role === 'admin') loadUsers();
                     if (activeTab === 'profile') loadProfile();
                 }
-            }, [token, adapterMode, activeTab]);
+            }, [token, activeTab]);
 
             const myProjects = projects.filter(p => p.owner_email === email);
 
@@ -216,15 +215,6 @@
 
             return (
                 <div className="p-8 max-w-4xl mx-auto">
-                    <div className="bg-amber-50 p-4 mb-8 rounded-xl border border-amber-200 flex justify-between items-center shadow-sm">
-                        <span className="text-amber-800 font-bold text-xs uppercase tracking-widest">Active Pillar:</span>
-                        <select value={adapterMode} onChange={(e) => setAdapterMode(e.target.value)} className="p-2 border border-amber-300 rounded-lg text-xs font-bold bg-white">
-                            <option value="prod-postgres">PostgreSQL (Local Container - Persistent)</option>
-                            <option value="prod-sqlite">SQLite (Local File - Persistent)</option>
-                            <option value="dev-mock">MockDB (In-Memory Simulation)</option>
-                        </select>
-                    </div>
-
                     <header className="flex justify-between items-end mb-8 border-b pb-4">
                         <h1 className="text-5xl font-black tracking-tighter text-gray-900">Research Portal</h1>
                         <button onClick={() => { localStorage.clear(); setToken(null); setRole(null); setEmail(null); }} className="text-red-500 font-bold hover:underline mb-1 text-sm uppercase">Logout ({role})</button>
@@ -274,7 +264,7 @@
                             <div className="grid gap-4">
                                 <h2 className="text-xl font-bold text-gray-800">Inventory {isLoading && <span className="text-xs text-blue-500 animate-pulse ml-2">...WIRING...</span>}</h2>
                                 {projects.length === 0 && !isLoading ? (
-                                    <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-gray-100 italic text-gray-400">No projects in {adapterMode}.</div>
+                                    <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-gray-100 italic text-gray-400">No projects yet.</div>
                                 ) : projects.map(p => {
                                     const isOpen = expandedProject === p.reference_id;
                                     const isOwner = p.owner_email === email;

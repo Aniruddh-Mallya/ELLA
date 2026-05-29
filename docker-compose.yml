@@ -25,6 +25,11 @@ services:
     volumes:
       - ./data:/app/data
     environment:
+      # Which database the whole app uses. Swap this value + restart to switch
+      # backends (the hexagonal adapters). Options:
+      #   prod-sqlite   -> local file at ./data/research.db
+      #   prod-postgres -> the local "postgres" service defined above
+      #   dev-mock      -> in-memory store (tests/demo)
       DEFAULT_ADAPTER_MODE: prod-sqlite
       DATABASE_URL: postgresql+psycopg2://rmsadmin:rmsadmin@postgres:5432/rmsdb
       # Secrets come from the gitignored .env file (see .env.example).
