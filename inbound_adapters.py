@@ -9,7 +9,7 @@ CHANGES FROM v2:
   - DELETE /api/users   → admin deletes a user
   - All existing routes UNCHANGED
 """
-import os, sys
+import os, sys, secrets
 from fastapi import FastAPI, Header, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -23,10 +23,29 @@ from outbound_adapters import (
 
 # -- Read config from environment (see docker-compose.yml) --
 DATABASE_URL       = os.getenv("DATABASE_URL", "sqlite:///./data/research.db")
-JWT_SECRET         = os.getenv("JWT_SECRET", "rms_secret_2026")
 DEFAULT_ADAPTER    = os.getenv("DEFAULT_ADAPTER_MODE", "prod-sqlite")
 RESEARCH_API_MODE  = os.getenv("RESEARCH_API_MODE", "openalex")  # "openalex" | "mock"
 OPENALEX_EMAIL     = os.getenv("OPENALEX_EMAIL", "")             # optional polite-pool contact
+
+# JWT signing key. In production this MUST be provided via JWT_SECRET. If it is
+# missing we generate a random key at startup rather than fall back to a known
+# hardcoded one — a publicly-known key would let anyone forge an admin token.
+# Trade-off: tokens issued before a restart stop working after it.
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    JWT_SECRET = secrets.token_urlsafe(32)
+    print(
+        "[AUTH] JWT_SECRET not set — generated a temporary key. "
+        "Logins will not survive a restart. Set JWT_SECRET for stable sessions.",
+        file=sys.stderr,
+    )
+
+# Seed credentials — supplied via environment, never hardcoded. An account is
+# only created when its password is provided.
+ADMIN_EMAIL         = os.getenv("ADMIN_EMAIL", "admin@rms.com")
+ADMIN_PASSWORD      = os.getenv("ADMIN_PASSWORD")
+RESEARCHER_EMAIL    = os.getenv("RESEARCHER_EMAIL", "researcher@rms.com")
+RESEARCHER_PASSWORD = os.getenv("RESEARCHER_PASSWORD")
 
 
 # =====================================================================
@@ -128,13 +147,26 @@ def startup_seed():
     in one backend don't block the other.
     """
     hasher = BcryptHasher()
+
+    seed_list = []
+    if ADMIN_PASSWORD:
+        seed_list.append({
+            "email": ADMIN_EMAIL, "password": ADMIN_PASSWORD, "role": "admin",
+            "full_name": "System Administrator", "institution": None,
+        })
+    if RESEARCHER_PASSWORD:
+        seed_list.append({
+            "email": RESEARCHER_EMAIL, "password": RESEARCHER_PASSWORD, "role": "researcher",
+            "full_name": "Default Researcher", "institution": "ELLA Research Institute",
+        })
+
     try:
-        seed_users(SQLiteUserAdapter(), hasher)
+        seed_users(SQLiteUserAdapter(), hasher, seed_list)
     except Exception as e:
         print(f"[SEED] SQLite seed skipped — {e}", file=sys.stderr)
     if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
         try:
-            seed_users(PostgresUserAdapter(DATABASE_URL), hasher)
+            seed_users(PostgresUserAdapter(DATABASE_URL), hasher, seed_list)
         except Exception as e:
             print(f"[SEED] Postgres seed skipped — {e}", file=sys.stderr)
 

@@ -27,7 +27,12 @@ services:
     environment:
       DEFAULT_ADAPTER_MODE: prod-sqlite
       DATABASE_URL: postgresql+psycopg2://rmsadmin:rmsadmin@postgres:5432/rmsdb
-      JWT_SECRET: rms_local_secret_2026
+      # Secrets come from the gitignored .env file (see .env.example).
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      RESEARCHER_EMAIL: ${RESEARCHER_EMAIL}
+      RESEARCHER_PASSWORD: ${RESEARCHER_PASSWORD}
       # Paper search: "openalex" (real API) or "mock" (offline stub)
       RESEARCH_API_MODE: openalex
       # Optional: your email puts requests in OpenAlex's faster "polite pool"

@@ -551,18 +551,15 @@ class LogBrokerAdapter(MessageBrokerPort):
 # SEED: Insert default users on first run
 # ═══════════════════════════════════════════════════════════════════
 
-def seed_users(user_repo: UserRepositoryPort, hasher: PasswordHasherPort) -> None:
+def seed_users(user_repo: UserRepositoryPort, hasher: PasswordHasherPort, users: List[Dict]) -> None:
     """
-    Seeds two default users if they don't already exist.
-    Called once during app startup from inbound_adapters.py.
+    Seeds the given users if they don't already exist.
+
+    Credentials are supplied by the caller (driven by environment variables in
+    inbound_adapters.py) — no passwords are hardcoded here. Called once during
+    app startup.
     """
-    defaults = [
-        {"email": "admin@rms.com",      "password": "admin123",      "role": "admin",
-         "full_name": "System Administrator", "institution": None},
-        {"email": "researcher@rms.com", "password": "researcher123", "role": "researcher",
-         "full_name": "Default Researcher",   "institution": "ELLA Research Institute"},
-    ]
-    for u in defaults:
+    for u in users:
         user_repo.save(
             email=u["email"],
             password_hash=hasher.hash(u["password"]),
@@ -574,8 +571,11 @@ def seed_users(user_repo: UserRepositoryPort, hasher: PasswordHasherPort) -> Non
         if existing is not None and not existing.get("full_name"):
             user_repo.update_profile(
                 email=u["email"],
-                full_name=u["full_name"],
-                institution=u["institution"],
+                full_name=u.get("full_name"),
+                institution=u.get("institution"),
                 orcid_id=None,
             )
-    print("[SEED] Default users verified/created.")
+    if users:
+        print(f"[SEED] Verified/created {len(users)} seed user(s).")
+    else:
+        print("[SEED] No seed users configured — set ADMIN_PASSWORD to create the admin account.")
