@@ -119,7 +119,3 @@ class PasswordHasherPort(ABC):
 class ResearchApiPort(ABC):
     @abstractmethod
     def search_papers(self, query: str, limit: int = 10) -> List["Paper"]: pass
-
-class MessageBrokerPort(ABC):
-    @abstractmethod
-    def publish_event(self, event_type: str, data: Dict) -> None: pass

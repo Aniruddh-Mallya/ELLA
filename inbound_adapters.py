@@ -17,7 +17,7 @@ from domain import ResearchService, AuthService, UserService, ProfileService
 from outbound_adapters import (
     SQLiteProjectAdapter, MockProjectAdapter, PostgresProjectAdapter,
     SQLiteUserAdapter, MockUserAdapter, PostgresUserAdapter,
-    JWTAdapter, OpenAlexAdapter, MockResearchApiAdapter, LogBrokerAdapter,
+    JWTAdapter, OpenAlexAdapter, MockResearchApiAdapter,
     BcryptHasher, seed_users,
 )
 
@@ -111,7 +111,7 @@ def get_research_service(
     user_repo=Depends(get_user_adapter),
 ):
     # user_repo lets the service enrich project listings with owner profiles
-    return ResearchService(db, api, LogBrokerAdapter(), user_repo)
+    return ResearchService(db, api, user_repo)
 
 
 # =====================================================================

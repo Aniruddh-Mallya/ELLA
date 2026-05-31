@@ -2,7 +2,7 @@ import pytest
 from domain import ResearchService, ProfileService
 from ports import (
     Project, User, Paper,
-    ProjectDatabasePort, ResearchApiPort, MessageBrokerPort, UserRepositoryPort,
+    ProjectDatabasePort, ResearchApiPort, UserRepositoryPort,
 )
 from typing import List, Dict, Optional
 
@@ -41,13 +41,6 @@ class MockApiAdapter(ResearchApiPort):
             for i in range(min(limit, 2))
         ]
 
-class MockBrokerAdapter(MessageBrokerPort):
-    """Pillar 4 Mock: Simulation for Messaging/Events."""
-    def __init__(self):
-        self.events_sent = []
-    def publish_event(self, event_type: str, data: Dict) -> None:
-        self.events_sent.append({"type": event_type, "data": data})
-
 class MockUserRepo(UserRepositoryPort):
     """Pillar 1b Mock: in-memory user store incl. profile fields."""
     def __init__(self):
@@ -80,12 +73,11 @@ class MockUserRepo(UserRepositoryPort):
         return True
 
 
-def _research_service(db=None, api=None, broker=None, repo=None):
+def _research_service(db=None, api=None, repo=None):
     """Helper that wires a ResearchService with sensible mock defaults."""
     return ResearchService(
         db or MockDBAdapter(),
         api or MockApiAdapter(),
-        broker or MockBrokerAdapter(),
         repo or MockUserRepo(),
     )
 
@@ -109,19 +101,16 @@ def test_research_service_role_check():
     with pytest.raises(PermissionError, match="Access Denied"):
         service.create_project(Project(title="New Android Research"), weak_user)
 
-def test_successful_project_creation_and_messaging():
-    """Test the 'Happy Path' including Pillar 1 and Pillar 4 interactions."""
+def test_successful_project_creation():
+    """Test the 'Happy Path' for project creation (Pillar 1 storage)."""
     mock_db = MockDBAdapter()
-    mock_broker = MockBrokerAdapter()
-    service = _research_service(db=mock_db, broker=mock_broker)
+    service = _research_service(db=mock_db)
 
     user = User(email="bulma@capsule.com", role="admin")
     created = service.create_project(Project(title="Gravity Chamber v2"), user)
 
     assert created.title == "Gravity Chamber v2"
     assert len(mock_db.fetch_all()) == 1  # Verify Pillar 1 (Storage)
-    assert len(mock_broker.events_sent) == 1  # Verify Pillar 4 (Messaging)
-    assert mock_broker.events_sent[0]["type"] == "PROJECT_CREATED"
 
 
 # --- 3. PROJECT OWNERSHIP (linked to a real authenticated user) ---
@@ -167,17 +156,14 @@ def test_project_listing_falls_back_to_email_when_no_name():
 # --- 4. PAPER SEARCH (Pillar 3) ---
 
 def test_search_papers_happy_path():
-    """Search returns typed Paper objects and emits a PAPER_SEARCH event."""
-    mock_broker = MockBrokerAdapter()
-    service = _research_service(broker=mock_broker)
+    """Search returns typed Paper objects."""
+    service = _research_service()
 
     results = service.search_papers("quantum computing", limit=2)
 
     assert len(results) == 2
     assert all(isinstance(p, Paper) for p in results)
     assert "quantum computing" in results[0].title
-    assert mock_broker.events_sent[0]["type"] == "PAPER_SEARCH"
-    assert mock_broker.events_sent[0]["data"]["count"] == 2
 
 def test_search_papers_rejects_short_query():
     """Queries under 2 characters are rejected before any API call."""
@@ -202,8 +188,7 @@ def _owned_project(service, owner_email):
 
 def test_owner_can_save_paper_to_project():
     db = MockDBAdapter()
-    broker = MockBrokerAdapter()
-    service = _research_service(db=db, broker=broker)
+    service = _research_service(db=db)
     owner = User(email="ada@x.com", role="researcher")
     project = _owned_project(service, "ada@x.com")
 
@@ -212,7 +197,6 @@ def test_owner_can_save_paper_to_project():
 
     saved = service.get_project_papers(project.reference_id)
     assert [p.paper_id for p in saved] == ["W1"]
-    assert any(e["type"] == "PAPER_SAVED" for e in broker.events_sent)
 
 
 def test_non_owner_cannot_save_paper():
@@ -259,15 +243,13 @@ def test_save_to_missing_project_raises():
 
 def test_owner_can_remove_saved_paper():
     db = MockDBAdapter()
-    broker = MockBrokerAdapter()
-    service = _research_service(db=db, broker=broker)
+    service = _research_service(db=db)
     owner = User(email="ada@x.com", role="researcher")
     project = _owned_project(service, "ada@x.com")
     service.save_paper_to_project(project.reference_id, Paper(paper_id="W1", title="X"), owner)
 
     service.remove_paper_from_project(project.reference_id, "W1", owner)
     assert service.get_project_papers(project.reference_id) == []
-    assert any(e["type"] == "PAPER_REMOVED" for e in broker.events_sent)
 
 
 def test_non_owner_cannot_remove_paper():

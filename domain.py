@@ -2,7 +2,7 @@ import re
 from typing import List, Dict, Optional
 from ports import (
     Project, ProjectView, User, Paper,
-    ProjectDatabasePort, ResearchApiPort, MessageBrokerPort,
+    ProjectDatabasePort, ResearchApiPort,
     TokenProviderPort, UserRepositoryPort, PasswordHasherPort,
 )
 
@@ -14,10 +14,9 @@ class ResearchService:
     and stamps new projects with the authenticated creator as owner.
     """
     def __init__(self, db: ProjectDatabasePort, api: ResearchApiPort,
-                 broker: MessageBrokerPort, user_repo: UserRepositoryPort):
+                 user_repo: UserRepositoryPort):
         self.db = db
         self.api = api
-        self.broker = broker
         self.user_repo = user_repo
 
     def get_all_projects(self) -> List[ProjectView]:
@@ -54,7 +53,6 @@ class ResearchService:
             raise ValueError("Validation Error: limit must be between 1 and 25.")
 
         results = self.api.search_papers(cleaned, limit=limit)
-        self.broker.publish_event("PAPER_SEARCH", {"query": cleaned, "count": len(results)})
         return results
 
     def create_project(self, project: Project, user: User) -> Project:
@@ -68,10 +66,6 @@ class ResearchService:
         project.owner_email = user.email
 
         saved = self.db.save(project)
-        self.broker.publish_event("PROJECT_CREATED", {
-            "ref_id": saved.reference_id,
-            "owner": saved.owner_email,
-        })
         return saved
 
     # --- Saved papers: the bridge between search results and projects ---
@@ -94,10 +88,6 @@ class ResearchService:
             raise ValueError("This paper is already saved to this project.")
 
         saved = self.db.save_paper(project_ref_id, paper)
-        self.broker.publish_event("PAPER_SAVED", {
-            "project": project_ref_id,
-            "paper_id": saved.paper_id,
-        })
         return saved
 
     def get_project_papers(self, project_ref_id: str) -> List[Paper]:
@@ -117,10 +107,6 @@ class ResearchService:
         removed = self.db.remove_paper(project_ref_id, paper_id)
         if not removed:
             raise ValueError("Paper not found in this project.")
-        self.broker.publish_event("PAPER_REMOVED", {
-            "project": project_ref_id,
-            "paper_id": paper_id,
-        })
 
 
 class AuthService:

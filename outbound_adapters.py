@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, Column, Integer, String, UniqueConstraint
 from sqlalchemy.orm import sessionmaker, declarative_base
 from ports import (
     ProjectDatabasePort, TokenProviderPort, ResearchApiPort,
-    MessageBrokerPort, UserRepositoryPort, PasswordHasherPort,
+    UserRepositoryPort, PasswordHasherPort,
     Project, Paper,
 )
 
@@ -536,15 +536,6 @@ class MockResearchApiAdapter(ResearchApiPort):
             )
             for i in range(min(limit, 3))
         ]
-
-
-# ═══════════════════════════════════════════════════════════════════
-# PILLAR 4: MESSAGING (UNCHANGED)
-# ═══════════════════════════════════════════════════════════════════
-
-class LogBrokerAdapter(MessageBrokerPort):
-    def publish_event(self, t, d):
-        print(f"[EVENT-BROKER] Broadcast: {t} | Data: {d}")
 
 
 # ═══════════════════════════════════════════════════════════════════
