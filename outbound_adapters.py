@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, Column, Integer, String, UniqueConstraint
 from sqlalchemy.orm import sessionmaker, declarative_base
 from ports import (
     ProjectDatabasePort, TokenProviderPort, ResearchApiPort,
-    UserRepositoryPort, PasswordHasherPort,
+    UserRepositoryPort, AuthMethodPort,
     Project, Paper,
 )
 
@@ -422,15 +422,43 @@ class JWTAdapter(TokenProviderPort):
             return None
 
 
-class BcryptHasher(PasswordHasherPort):
-    """Adapter that wraps bcrypt — keeps the library out of domain.py."""
+class PasswordAuthAdapter(AuthMethodPort):
+    """The 'password' login technique. Owns bcrypt internally — this is where the
+    former PasswordHasherPort/BcryptHasher folded in.
+
+    Two responsibilities, both genuinely belonging to passwords:
+      - authenticate(): verify an email + password at login.
+      - hash():         turn a new password into a stored hash (used when an admin
+                        creates an account, and when seeding the default users).
+    """
+    name = "password"
+
+    def __init__(self, user_repo: UserRepositoryPort):
+        # Needs the user store to look up the stored hash during verification.
+        self.user_repo = user_repo
+
     def hash(self, password: str) -> str:
         import bcrypt
         return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-    def verify(self, password: str, hashed: str) -> bool:
+    def _verify(self, password: str, hashed: str) -> bool:
         import bcrypt
         return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+
+    def authenticate(self, credentials: Dict) -> Optional[Dict]:
+        """Verify {email, password}. Returns {email, role} on success, else None."""
+        email = credentials.get("email", "")
+        password = credentials.get("password", "")
+        record = self.user_repo.get_by_email(email)
+        if record is None:
+            return None
+        # An account created via OAuth (later) may have no password — reject here.
+        stored = record.get("password_hash")
+        if not stored:
+            return None
+        if not self._verify(password, stored):
+            return None
+        return {"email": record["email"], "role": record["role"]}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -542,18 +570,19 @@ class MockResearchApiAdapter(ResearchApiPort):
 # SEED: Insert default users on first run
 # ═══════════════════════════════════════════════════════════════════
 
-def seed_users(user_repo: UserRepositoryPort, hasher: PasswordHasherPort, users: List[Dict]) -> None:
+def seed_users(user_repo: UserRepositoryPort, password_method, users: List[Dict]) -> None:
     """
     Seeds the given users if they don't already exist.
 
-    Credentials are supplied by the caller (driven by environment variables in
-    inbound_adapters.py) — no passwords are hardcoded here. Called once during
-    app startup.
+    `password_method` is the password login technique (PasswordAuthAdapter); we use
+    its hash() to scramble each seed password. Credentials are supplied by the caller
+    (driven by environment variables in inbound_adapters.py) — no passwords are
+    hardcoded here. Called once during app startup.
     """
     for u in users:
         user_repo.save(
             email=u["email"],
-            password_hash=hasher.hash(u["password"]),
+            password_hash=password_method.hash(u["password"]),
             role=u["role"],
         )
         # Only set default profile values if the user hasn't filled theirs in

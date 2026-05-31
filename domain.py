@@ -3,7 +3,7 @@ from typing import List, Dict, Optional
 from ports import (
     Project, ProjectView, User, Paper,
     ProjectDatabasePort, ResearchApiPort,
-    TokenProviderPort, UserRepositoryPort, PasswordHasherPort,
+    TokenProviderPort, UserRepositoryPort, AuthMethodPort,
 )
 
 
@@ -113,35 +113,41 @@ class AuthService:
     """
     The 'Security Controller' - Logic for identity.
 
-    CHANGED: Now authenticates against a user repository with hashed passwords,
-    instead of deriving role from the email string.
+    The clerk at the front desk: it no longer knows HOW you prove who you are.
+    Each proof technique is an AuthMethodPort plugged in by name ("password" today;
+    "google"/"github" later). AuthService verifies via the chosen technique, then
+    issues the SAME JWT wristband for every method — one consistent outcome.
 
     Dependencies (all ports — no infrastructure imports):
-      - user_repo:       UserRepositoryPort   (SQLite/Postgres/Mock)
-      - token_provider:  TokenProviderPort     (JWT)
-      - hasher:          PasswordHasherPort    (bcrypt)
+      - token_provider:  TokenProviderPort             (JWT)
+      - methods:         Dict[str, AuthMethodPort]      (the enabled login techniques)
     """
     def __init__(
         self,
-        user_repo: UserRepositoryPort,
         token_provider: TokenProviderPort,
-        hasher: PasswordHasherPort,
+        methods: Dict[str, AuthMethodPort],
     ):
-        self.user_repo = user_repo
         self.token_provider = token_provider
-        self.hasher = hasher
+        self.methods = methods
 
-    def authenticate(self, email: str, password: str) -> Dict:
-        """Validate credentials and return a JWT + role."""
-        record = self.user_repo.get_by_email(email)
-        if record is None:
+    def authenticate(self, method: str, credentials: Dict) -> Dict:
+        """Verify via the chosen technique, then return a JWT + role.
+
+        `method` selects which plugged-in technique to use ("password", ...).
+        Raises PermissionError on an unknown/disabled method or an invalid proof.
+        """
+        technique = self.methods.get(method)
+        if technique is None:
             raise PermissionError("Invalid credentials.")
 
-        if not self.hasher.verify(password, record["password_hash"]):
+        identity = technique.authenticate(credentials)
+        if identity is None:
             raise PermissionError("Invalid credentials.")
 
-        token = self.token_provider.encode({"email": record["email"], "role": record["role"]})
-        return {"token": token, "role": record["role"], "email": record["email"]}
+        token = self.token_provider.encode(
+            {"email": identity["email"], "role": identity["role"]}
+        )
+        return {"token": token, "role": identity["role"], "email": identity["email"]}
 
     def authorize(self, token: str) -> Optional[User]:
         """Decode a JWT and return the User, or None."""
@@ -156,13 +162,14 @@ class UserService:
     Separate from AuthService to avoid god-class anti-pattern.
     All operations require an admin caller.
 
-    Dependencies (all ports — no infrastructure imports):
+    Dependencies (no infrastructure imports):
       - user_repo:  UserRepositoryPort  (SQLite/Postgres/Mock)
-      - hasher:     PasswordHasherPort  (bcrypt)
+      - password:   the password login technique — used only for its hash() helper
+                    when an admin creates a new password account.
     """
-    def __init__(self, user_repo: UserRepositoryPort, hasher: PasswordHasherPort):
+    def __init__(self, user_repo: UserRepositoryPort, password):
         self.user_repo = user_repo
-        self.hasher = hasher
+        self.password = password
 
     def _require_admin(self, caller: User) -> None:
         if caller.role != "admin":
@@ -189,7 +196,7 @@ class UserService:
         if existing is not None:
             raise ValueError(f"Validation Error: User '{email}' already exists.")
 
-        hashed = self.hasher.hash(password)
+        hashed = self.password.hash(password)
         self.user_repo.save(email=email, password_hash=hashed, role=role)
         return {"email": email, "role": role}
 

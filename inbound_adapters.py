@@ -2,7 +2,7 @@
 inbound_adapters.py - Cloud-Ready (v3: User Lifecycle)
 =====================================================
 CHANGES FROM v2:
-  - get_user_service()  → new factory injecting UserRepositoryPort + PasswordHasherPort
+  - get_user_service()  → new factory injecting UserRepositoryPort + the password technique
   - GET /api/users      → admin lists all users
   - POST /api/users     → admin creates a user
   - PATCH /api/users/role → admin changes a user's role
@@ -18,7 +18,7 @@ from outbound_adapters import (
     SQLiteProjectAdapter, MockProjectAdapter, PostgresProjectAdapter,
     SQLiteUserAdapter, MockUserAdapter, PostgresUserAdapter,
     JWTAdapter, OpenAlexAdapter, MockResearchApiAdapter,
-    BcryptHasher, seed_users,
+    PasswordAuthAdapter, seed_users,
 )
 
 # -- Read config from environment (see docker-compose.yml) --
@@ -73,18 +73,21 @@ def get_user_adapter():
 
 
 def get_auth_service(user_repo=Depends(get_user_adapter)):
-    """Auth service — now backed by a real user repository + bcrypt."""
-    hasher = BcryptHasher()
+    """Auth service — verifies through the unified AuthMethodPort.
+
+    Only the password technique is enabled today. Google/GitHub (Task 3) will be
+    added as more entries in this `methods` map without touching AuthService.
+    """
+    methods = {"password": PasswordAuthAdapter(user_repo)}
     return AuthService(
-        user_repo=user_repo,
         token_provider=JWTAdapter(secret=JWT_SECRET),
-        hasher=hasher,
+        methods=methods,
     )
 
 
 def get_user_service(user_repo=Depends(get_user_adapter)):
     """User service — admin-only CRUD for user lifecycle."""
-    return UserService(user_repo=user_repo, hasher=BcryptHasher())
+    return UserService(user_repo=user_repo, password=PasswordAuthAdapter(user_repo))
 
 
 def get_profile_service(user_repo=Depends(get_user_adapter)):
@@ -146,8 +149,6 @@ def startup_seed():
     can flip between them without "user not found" errors. Failures
     in one backend don't block the other.
     """
-    hasher = BcryptHasher()
-
     seed_list = []
     if ADMIN_PASSWORD:
         seed_list.append({
@@ -161,12 +162,14 @@ def startup_seed():
         })
 
     try:
-        seed_users(SQLiteUserAdapter(), hasher, seed_list)
+        repo = SQLiteUserAdapter()
+        seed_users(repo, PasswordAuthAdapter(repo), seed_list)
     except Exception as e:
         print(f"[SEED] SQLite seed skipped — {e}", file=sys.stderr)
     if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
         try:
-            seed_users(PostgresUserAdapter(DATABASE_URL), hasher, seed_list)
+            repo = PostgresUserAdapter(DATABASE_URL)
+            seed_users(repo, PasswordAuthAdapter(repo), seed_list)
         except Exception as e:
             print(f"[SEED] Postgres seed skipped — {e}", file=sys.stderr)
 
@@ -193,7 +196,7 @@ async def login(payload: dict = Body(...), auth: AuthService = Depends(get_auth_
     email = payload.get("email", "")
     password = payload.get("password", "")
     try:
-        return auth.authenticate(email, password)
+        return auth.authenticate("password", {"email": email, "password": password})
     except PermissionError as e:
         raise HTTPException(status_code=401, detail=str(e))
 

@@ -109,12 +109,26 @@ class TokenProviderPort(ABC):
     @abstractmethod
     def decode(self, token: str) -> Optional[Dict]: pass
 
-class PasswordHasherPort(ABC):
-    """Port for password hashing — keeps bcrypt out of domain."""
+class AuthMethodPort(ABC):
+    """A single technique for proving identity at login — the unified 'ID-check slot'.
+
+    Every login method plugs in here and does the same job: take whatever the
+    visitor presents and return a VERIFIED identity, or None if the proof fails.
+    Password is the only technique today; Google/GitHub will be added later as
+    more adapters behind this same port. The shared 'issue a JWT' step lives in
+    AuthService, so all methods converge on one consistent outcome.
+    """
+    # Short technique id set by each adapter, e.g. "password" | "google" | "github".
+    name: str
+
     @abstractmethod
-    def hash(self, password: str) -> str: pass
-    @abstractmethod
-    def verify(self, password: str, hashed: str) -> bool: pass
+    def authenticate(self, credentials: Dict) -> Optional[Dict]:
+        """Verify the presented credentials.
+
+        Returns a verified identity {"email": str, "role": str} on success,
+        or None if the proof is invalid.
+        """
+        pass
 
 class ResearchApiPort(ABC):
     @abstractmethod
