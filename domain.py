@@ -121,19 +121,27 @@ class AuthService:
     Dependencies (all ports — no infrastructure imports):
       - token_provider:  TokenProviderPort             (JWT)
       - methods:         Dict[str, AuthMethodPort]      (the enabled login techniques)
+      - user_repo:       UserRepositoryPort            (for the find-or-create tail)
+      - admin_emails:    list[str]                     (emails granted admin on signup)
     """
     def __init__(
         self,
         token_provider: TokenProviderPort,
         methods: Dict[str, AuthMethodPort],
+        user_repo: UserRepositoryPort,
+        admin_emails: Optional[List[str]] = None,
     ):
         self.token_provider = token_provider
         self.methods = methods
+        self.user_repo = user_repo
+        # Emails that should be admins, compared case-insensitively.
+        self.admin_emails = {e.strip().lower() for e in (admin_emails or []) if e.strip()}
 
     def authenticate(self, method: str, credentials: Dict) -> Dict:
-        """Verify via the chosen technique, then return a JWT + role.
+        """Verify via the chosen technique, then find-or-create the user and issue
+        the SAME JWT — the shared tail that every login method converges on.
 
-        `method` selects which plugged-in technique to use ("password", ...).
+        `method` picks the technique ("password" / "google" / "github").
         Raises PermissionError on an unknown/disabled method or an invalid proof.
         """
         technique = self.methods.get(method)
@@ -144,10 +152,22 @@ class AuthService:
         if identity is None:
             raise PermissionError("Invalid credentials.")
 
-        token = self.token_provider.encode(
-            {"email": identity["email"], "role": identity["role"]}
-        )
-        return {"token": token, "role": identity["role"], "email": identity["email"]}
+        email = identity["email"]
+        provider = identity.get("provider", method)
+
+        # --- find-or-create ---
+        record = self.user_repo.get_by_email(email)
+        if record is None:
+            # First sight of this person. Only OAuth signups reach here — password
+            # verification returns None for unknown users, so they never auto-create.
+            # New OAuth users are researchers, unless their email is on the allowlist.
+            role = "admin" if email.lower() in self.admin_emails else "researcher"
+            self.user_repo.add_oauth_user(email=email, role=role, provider=provider)
+        else:
+            role = record["role"]
+
+        token = self.token_provider.encode({"email": email, "role": role})
+        return {"token": token, "role": role, "email": email}
 
     def authorize(self, token: str) -> Optional[User]:
         """Decode a JWT and return the User, or None."""

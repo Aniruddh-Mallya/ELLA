@@ -82,6 +82,11 @@ class UserRepositoryPort(ABC):
     def save(self, email: str, password_hash: str, role: str) -> None: pass
 
     @abstractmethod
+    def add_oauth_user(self, email: str, role: str, provider: str) -> None: pass
+    # Creates a passwordless account for an external provider (google/github).
+    # `provider` records where the account came from. Should no-op if user exists.
+
+    @abstractmethod
     def fetch_all(self) -> List[Dict]: pass
     # Returns list of dicts with keys: email, role (NO password_hash)
 
@@ -125,8 +130,25 @@ class AuthMethodPort(ABC):
     def authenticate(self, credentials: Dict) -> Optional[Dict]:
         """Verify the presented credentials.
 
-        Returns a verified identity {"email": str, "role": str} on success,
-        or None if the proof is invalid.
+        Returns a verified identity {"email": str, ...} on success (OAuth methods
+        include {"provider": ...}; password also carries the stored role), or None
+        if the proof is invalid.
+        """
+        pass
+
+class OAuthMethodPort(AuthMethodPort):
+    """An AuthMethodPort whose proof is a two-step browser redirect (Google/GitHub).
+
+    Beyond authenticate() — which handles the provider's *callback* by swapping the
+    one-time code for a verified email — it can also build the URL that sends the
+    user out to the provider's own login page in the first place.
+    """
+    @abstractmethod
+    def build_redirect_url(self, state: str, redirect_uri: str) -> str:
+        """Return the provider's authorize URL to redirect the browser to.
+
+        `state` is an anti-forgery token echoed back on the callback;
+        `redirect_uri` is our own callback address the provider must return to.
         """
         pass
 

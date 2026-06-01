@@ -42,6 +42,14 @@ services:
       RESEARCH_API_MODE: openalex
       # Optional: your email puts requests in OpenAlex's faster "polite pool"
       OPENALEX_EMAIL: ""
+      # Login methods (Task 3) — values come from the gitignored .env file
+      ENABLED_AUTH_METHODS: ${ENABLED_AUTH_METHODS:-password}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-admin@rms.com}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      OAUTH_REDIRECT_BASE: ${OAUTH_REDIRECT_BASE:-}
     depends_on:
       postgres:
         condition: service_healthy

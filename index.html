@@ -55,6 +55,7 @@
             const [error, setError] = useState(null);
             const [success, setSuccess] = useState(null);
             const [activeTab, setActiveTab] = useState('projects');
+            const [authMethods, setAuthMethods] = useState([]);
 
             const apiCall = async (endpoint, method = 'GET', body = null) => {
                 setError(null);
@@ -157,6 +158,27 @@
                 }
             }, [token, activeTab]);
 
+            // On first load: (1) catch a wristband handed back by an OAuth callback
+            // (/?token=...&role=...&email=...), (2) discover which login buttons to show.
+            useEffect(() => {
+                const params = new URLSearchParams(window.location.search);
+                const t = params.get('token');
+                if (t) {
+                    localStorage.setItem('token', t);
+                    localStorage.setItem('role', params.get('role') || '');
+                    localStorage.setItem('email', params.get('email') || '');
+                    setToken(t); setRole(params.get('role')); setEmail(params.get('email'));
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                } else if (params.get('auth_error')) {
+                    setError('Sign-in failed: ' + params.get('auth_error'));
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                }
+                fetch(`${API_BASE_URL}/api/auth/methods`)
+                    .then(r => r.json())
+                    .then(d => setAuthMethods(d.methods || []))
+                    .catch(() => {});
+            }, []);
+
             const myProjects = projects.filter(p => p.owner_email === email);
 
             const handleChangeRole = async (email, currentRole) => {
@@ -206,9 +228,25 @@
                 <div className="flex items-center justify-center h-screen bg-gray-100">
                     <form onSubmit={login} className="bg-white p-10 rounded-2xl shadow-xl w-96">
                         <h2 className="text-3xl font-black mb-6 text-gray-800 border-b pb-2 tracking-tighter">RMS LOGIN</h2>
+                        {error && <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-3 rounded-r-xl mb-4 text-sm font-bold">{error}</div>}
                         <input name="email" type="email" placeholder="admin@rms.com" className="w-full p-4 border rounded-xl mb-4 bg-gray-50 outline-none focus:ring-2 focus:ring-blue-500" required />
                         <input name="password" type="password" placeholder="Password" className="w-full p-4 border rounded-xl mb-4 bg-gray-50 outline-none focus:ring-2 focus:ring-blue-500" required />
                         <button className="w-full bg-blue-600 text-white p-4 rounded-xl font-bold hover:bg-blue-700 transition shadow-lg">Login</button>
+                        {(authMethods.includes('google') || authMethods.includes('github')) && (
+                            <div className="mt-6">
+                                <div className="flex items-center gap-3 mb-4">
+                                    <div className="flex-1 h-px bg-gray-200"></div>
+                                    <span className="text-xs text-gray-400 uppercase tracking-widest">or</span>
+                                    <div className="flex-1 h-px bg-gray-200"></div>
+                                </div>
+                                {authMethods.includes('google') && (
+                                    <a href={`${API_BASE_URL}/auth/google/login`} className="block w-full text-center border border-gray-300 p-3 rounded-xl mb-3 font-bold text-gray-700 hover:bg-gray-50 transition">Continue with Google</a>
+                                )}
+                                {authMethods.includes('github') && (
+                                    <a href={`${API_BASE_URL}/auth/github/login`} className="block w-full text-center bg-gray-900 text-white p-3 rounded-xl font-bold hover:bg-gray-800 transition">Continue with GitHub</a>
+                                )}
+                            </div>
+                        )}
                     </form>
                 </div>
             );

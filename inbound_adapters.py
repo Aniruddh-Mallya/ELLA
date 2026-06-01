@@ -10,15 +10,15 @@ CHANGES FROM v2:
   - All existing routes UNCHANGED
 """
 import os, sys, secrets
-from fastapi import FastAPI, Header, Depends, HTTPException, Body
+from fastapi import FastAPI, Header, Depends, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from domain import ResearchService, AuthService, UserService, ProfileService
 from outbound_adapters import (
     SQLiteProjectAdapter, MockProjectAdapter, PostgresProjectAdapter,
     SQLiteUserAdapter, MockUserAdapter, PostgresUserAdapter,
     JWTAdapter, OpenAlexAdapter, MockResearchApiAdapter,
-    PasswordAuthAdapter, seed_users,
+    PasswordAuthAdapter, GoogleAuthAdapter, GitHubAuthAdapter, seed_users,
 )
 
 # -- Read config from environment (see docker-compose.yml) --
@@ -47,6 +47,23 @@ ADMIN_PASSWORD      = os.getenv("ADMIN_PASSWORD")
 RESEARCHER_EMAIL    = os.getenv("RESEARCHER_EMAIL", "researcher@rms.com")
 RESEARCHER_PASSWORD = os.getenv("RESEARCHER_PASSWORD")
 
+# --- Login methods (Task 3) ---
+# Which techniques are offered. Keep "password" for yourself; add "google"/"github"
+# to offer public self-signup. A provider only switches on if its credentials exist.
+ENABLED_AUTH_METHODS = {
+    m.strip().lower() for m in os.getenv("ENABLED_AUTH_METHODS", "password").split(",") if m.strip()
+}
+# Emails that become admins; everyone else who signs up is a researcher.
+ADMIN_EMAILS = [e.strip() for e in os.getenv("ADMIN_EMAILS", ADMIN_EMAIL).split(",") if e.strip()]
+
+GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GITHUB_CLIENT_ID     = os.getenv("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
+# Optional: force the base URL used to build OAuth redirect URIs (else derived
+# from the incoming request, e.g. http://localhost:8002).
+OAUTH_REDIRECT_BASE  = os.getenv("OAUTH_REDIRECT_BASE", "").rstrip("/")
+
 
 # =====================================================================
 # DEPENDENCY FACTORIES
@@ -72,16 +89,56 @@ def get_user_adapter():
     return SQLiteUserAdapter()
 
 
-def get_auth_service(user_repo=Depends(get_user_adapter)):
-    """Auth service — verifies through the unified AuthMethodPort.
+def _enabled_oauth():
+    """Provider name -> (client_id, client_secret) for OAuth methods that are both
+    enabled in config AND have credentials supplied."""
+    providers = {}
+    if "google" in ENABLED_AUTH_METHODS and GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+        providers["google"] = (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)
+    if "github" in ENABLED_AUTH_METHODS and GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET:
+        providers["github"] = (GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET)
+    return providers
 
-    Only the password technique is enabled today. Google/GitHub (Task 3) will be
-    added as more entries in this `methods` map without touching AuthService.
+
+def _oauth_adapter(provider: str):
+    """Build a fresh OAuth adapter for an enabled provider, or None."""
+    creds = _enabled_oauth().get(provider)
+    if creds is None:
+        return None
+    if provider == "google":
+        return GoogleAuthAdapter(*creds)
+    if provider == "github":
+        return GitHubAuthAdapter(*creds)
+    return None
+
+
+def _enabled_method_names():
+    """The login methods the UI should offer, e.g. ['password', 'google']."""
+    names = []
+    if "password" in ENABLED_AUTH_METHODS:
+        names.append("password")
+    names.extend(sorted(_enabled_oauth().keys()))
+    return names
+
+
+def get_auth_service(user_repo=Depends(get_user_adapter)):
+    """Auth service — verifies through the unified AuthMethodPort, then runs the
+    shared find-or-create + issue-JWT tail.
+
+    The `methods` map is assembled from ENABLED_AUTH_METHODS plus whichever provider
+    credentials are configured. Adding a provider = one more entry here; AuthService
+    itself never changes.
     """
-    methods = {"password": PasswordAuthAdapter(user_repo)}
+    methods = {}
+    if "password" in ENABLED_AUTH_METHODS:
+        methods["password"] = PasswordAuthAdapter(user_repo)
+    for provider in _enabled_oauth():
+        methods[provider] = _oauth_adapter(provider)
     return AuthService(
         token_provider=JWTAdapter(secret=JWT_SECRET),
         methods=methods,
+        user_repo=user_repo,
+        admin_emails=ADMIN_EMAILS,
     )
 
 
@@ -199,6 +256,71 @@ async def login(payload: dict = Body(...), auth: AuthService = Depends(get_auth_
         return auth.authenticate("password", {"email": email, "password": password})
     except PermissionError as e:
         raise HTTPException(status_code=401, detail=str(e))
+
+
+# =====================================================================
+# ROUTES — OAuth self-signup (Google / GitHub) — Task 3
+# =====================================================================
+
+def _oauth_redirect_uri(request: Request, provider: str) -> str:
+    """Our own callback address the provider must return the user to.
+    Must exactly match what you register in the provider's developer console."""
+    base = OAUTH_REDIRECT_BASE or str(request.base_url).rstrip("/")
+    return f"{base}/auth/{provider}/callback"
+
+
+@app.get("/api/auth/methods")
+async def auth_methods():
+    """Public: which login methods the UI should show as buttons."""
+    return {"methods": _enabled_method_names()}
+
+
+@app.get("/auth/{provider}/login")
+def oauth_login(provider: str, request: Request):
+    """Step 1 — send the browser to the provider's own login page."""
+    adapter = _oauth_adapter(provider)
+    if adapter is None:
+        raise HTTPException(status_code=404, detail="Unknown or disabled login provider.")
+    state = secrets.token_urlsafe(16)
+    redirect_uri = _oauth_redirect_uri(request, provider)
+    url = adapter.build_redirect_url(state, redirect_uri)
+    resp = RedirectResponse(url, status_code=302)
+    # Remember the anti-forgery state in a short-lived cookie to check on return.
+    resp.set_cookie("oauth_state", state, max_age=600, httponly=True, samesite="lax")
+    return resp
+
+
+@app.get("/auth/{provider}/callback")
+def oauth_callback(
+    provider: str,
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    auth: AuthService = Depends(get_auth_service),
+):
+    """Step 2 — the provider returns here. Verify, issue our JWT, then bounce the
+    user back into the app carrying the wristband in the URL (the page stores it
+    and wipes the address bar)."""
+    if error:
+        return RedirectResponse(f"/?auth_error={error}", status_code=302)
+    # CSRF check: the state echoed back must match the cookie we set on step 1.
+    if not state or state != request.cookies.get("oauth_state", ""):
+        return RedirectResponse("/?auth_error=state_mismatch", status_code=302)
+
+    redirect_uri = _oauth_redirect_uri(request, provider)
+    try:
+        result = auth.authenticate(provider, {"code": code, "redirect_uri": redirect_uri})
+    except PermissionError:
+        return RedirectResponse("/?auth_error=denied", status_code=302)
+    except RuntimeError:
+        return RedirectResponse("/?auth_error=provider_error", status_code=302)
+
+    from urllib.parse import urlencode
+    q = urlencode({"token": result["token"], "role": result["role"], "email": result["email"]})
+    resp = RedirectResponse(f"/?{q}", status_code=302)
+    resp.delete_cookie("oauth_state")
+    return resp
 
 
 @app.get("/api/projects")

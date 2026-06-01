@@ -1,8 +1,9 @@
 import pytest
-from domain import ResearchService, ProfileService
+from domain import ResearchService, ProfileService, AuthService
 from ports import (
     Project, User, Paper,
     ProjectDatabasePort, ResearchApiPort, UserRepositoryPort,
+    AuthMethodPort, TokenProviderPort,
 )
 from typing import List, Dict, Optional
 
@@ -51,6 +52,13 @@ class MockUserRepo(UserRepositoryPort):
         self.users.setdefault(email, {
             "email": email, "role": role, "password_hash": password_hash,
             "full_name": None, "institution": None, "orcid_id": None,
+            "auth_provider": "password",
+        })
+    def add_oauth_user(self, email: str, role: str, provider: str) -> None:
+        self.users.setdefault(email, {
+            "email": email, "role": role, "password_hash": "",
+            "full_name": None, "institution": None, "orcid_id": None,
+            "auth_provider": provider,
         })
     def fetch_all(self) -> List[Dict]:
         return [{"email": u["email"], "role": u["role"]} for u in self.users.values()]
@@ -330,3 +338,87 @@ def test_update_profile_only_touches_callers_own_record():
 
     # The other user's profile is untouched
     assert repo.get_profile("victim@x.com")["full_name"] == "Original Name"
+
+
+# --- 6. UNIFIED AUTH (password + OAuth converge on one find-or-create + JWT) ---
+
+class MockTokenProvider(TokenProviderPort):
+    """Trivial stand-in for the JWT adapter — encodes/decodes a readable string."""
+    def encode(self, payload: Dict) -> str:
+        return f"tok:{payload['email']}:{payload['role']}"
+    def decode(self, token: str) -> Optional[Dict]:
+        try:
+            _, email, role = token.split(":")
+            return {"email": email, "role": role}
+        except ValueError:
+            return None
+
+
+class FakeOAuthAdapter(AuthMethodPort):
+    """Stands in for Google/GitHub: returns a fixed verified email, no network."""
+    name = "google"
+    def __init__(self, email: str):
+        self._email = email
+    def authenticate(self, credentials: Dict) -> Optional[Dict]:
+        return {"email": self._email, "provider": "google"}
+
+
+def _auth_service(repo, methods, admin_emails=None):
+    return AuthService(
+        token_provider=MockTokenProvider(),
+        methods=methods,
+        user_repo=repo,
+        admin_emails=admin_emails or [],
+    )
+
+
+def test_oauth_new_user_is_created_as_researcher():
+    repo = MockUserRepo()
+    auth = _auth_service(repo, {"google": FakeOAuthAdapter("newbie@gmail.com")})
+
+    result = auth.authenticate("google", {"code": "x"})
+
+    assert result["email"] == "newbie@gmail.com"
+    assert result["role"] == "researcher"
+    # The user now exists, recorded as a google account
+    assert repo.get_by_email("newbie@gmail.com") is not None
+    assert repo.users["newbie@gmail.com"]["auth_provider"] == "google"
+
+
+def test_oauth_allowlisted_email_becomes_admin():
+    repo = MockUserRepo()
+    auth = _auth_service(repo, {"google": FakeOAuthAdapter("boss@gmail.com")},
+                         admin_emails=["BOSS@gmail.com"])  # match is case-insensitive
+
+    result = auth.authenticate("google", {"code": "x"})
+    assert result["role"] == "admin"
+
+
+def test_oauth_existing_user_keeps_their_role():
+    repo = MockUserRepo()
+    repo.save("ada@x.com", "hash", "admin")  # already an admin (password) account
+    auth = _auth_service(repo, {"google": FakeOAuthAdapter("ada@x.com")})
+
+    result = auth.authenticate("google", {"code": "x"})
+    assert result["role"] == "admin"  # not downgraded to researcher
+
+
+def test_password_login_through_authservice_still_works():
+    from outbound_adapters import PasswordAuthAdapter
+    repo = MockUserRepo()
+    pw = PasswordAuthAdapter(repo)
+    repo.save("ada@x.com", pw.hash("secret123"), "researcher")
+    auth = _auth_service(repo, {"password": pw})
+
+    ok = auth.authenticate("password", {"email": "ada@x.com", "password": "secret123"})
+    assert ok["role"] == "researcher" and ok["email"] == "ada@x.com"
+
+    with pytest.raises(PermissionError):
+        auth.authenticate("password", {"email": "ada@x.com", "password": "WRONG"})
+
+
+def test_unknown_or_disabled_method_is_rejected():
+    repo = MockUserRepo()
+    auth = _auth_service(repo, {})  # nothing enabled
+    with pytest.raises(PermissionError):
+        auth.authenticate("google", {"code": "x"})

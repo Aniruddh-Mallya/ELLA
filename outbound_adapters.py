@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, Column, Integer, String, UniqueConstraint
 from sqlalchemy.orm import sessionmaker, declarative_base
 from ports import (
     ProjectDatabasePort, TokenProviderPort, ResearchApiPort,
-    UserRepositoryPort, AuthMethodPort,
+    UserRepositoryPort, AuthMethodPort, OAuthMethodPort,
     Project, Paper,
 )
 
@@ -86,12 +86,31 @@ class DBUser(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     email = Column(String, unique=True, index=True, nullable=False)
-    password_hash = Column(String, nullable=False)
+    password_hash = Column(String, nullable=True)   # "" / null for OAuth accounts (no password)
     role = Column(String, nullable=False)  # "admin" | "researcher"
+    # which login method the account was created with: "password" | "google" | "github"
+    auth_provider = Column(String, nullable=True, default="password")
     # --- researcher profile (all nullable; filled in by the user) ---
     full_name = Column(String, nullable=True)
     institution = Column(String, nullable=True)
     orcid_id = Column(String, nullable=True)
+
+
+def _ensure_user_columns(engine) -> None:
+    """Add user columns introduced after a database was first created (idempotent).
+
+    SQLAlchemy's create_all() creates missing TABLES but never alters existing ones.
+    So when we add a column (auth_provider) to an older database, we add it by hand.
+    ALTER TABLE ADD COLUMN works on both SQLite and Postgres, and existing rows pick
+    up the DEFAULT 'password'. No data is touched or lost."""
+    from sqlalchemy import inspect as _inspect, text as _text
+    try:
+        cols = {c["name"] for c in _inspect(engine).get_columns("users")}
+    except Exception:
+        return  # table not there yet — create_all already made it with all columns
+    if "auth_provider" not in cols:
+        with engine.begin() as conn:
+            conn.execute(_text("ALTER TABLE users ADD COLUMN auth_provider VARCHAR DEFAULT 'password'"))
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -232,6 +251,7 @@ class SQLiteUserAdapter(UserRepositoryPort):
     def __init__(self, db_url: str = "sqlite:///./data/research.db"):
         self.engine = create_engine(db_url, connect_args={"check_same_thread": False})
         Base.metadata.create_all(bind=self.engine)
+        _ensure_user_columns(self.engine)  # add auth_provider to older DBs
         self.SessionLocal = sessionmaker(bind=self.engine)
 
     def get_by_email(self, email: str) -> Optional[Dict]:
@@ -246,7 +266,16 @@ class SQLiteUserAdapter(UserRepositoryPort):
             existing = db.query(DBUser).filter(DBUser.email == email).first()
             if existing:
                 return  # Already seeded — skip
-            db.add(DBUser(email=email, password_hash=password_hash, role=role))
+            db.add(DBUser(email=email, password_hash=password_hash, role=role, auth_provider="password"))
+            db.commit()
+
+    def add_oauth_user(self, email: str, role: str, provider: str) -> None:
+        with self.SessionLocal() as db:
+            existing = db.query(DBUser).filter(DBUser.email == email).first()
+            if existing:
+                return
+            # password_hash="" marks a no-password account (password login rejects it)
+            db.add(DBUser(email=email, password_hash="", role=role, auth_provider=provider))
             db.commit()
 
     def fetch_all(self) -> List[Dict]:
@@ -299,6 +328,7 @@ class PostgresUserAdapter(UserRepositoryPort):
     def __init__(self, db_url: str):
         self.engine = create_engine(db_url)
         Base.metadata.create_all(bind=self.engine)
+        _ensure_user_columns(self.engine)  # add auth_provider to older DBs
         self.SessionLocal = sessionmaker(bind=self.engine)
 
     def get_by_email(self, email: str) -> Optional[Dict]:
@@ -313,7 +343,15 @@ class PostgresUserAdapter(UserRepositoryPort):
             existing = db.query(DBUser).filter(DBUser.email == email).first()
             if existing:
                 return
-            db.add(DBUser(email=email, password_hash=password_hash, role=role))
+            db.add(DBUser(email=email, password_hash=password_hash, role=role, auth_provider="password"))
+            db.commit()
+
+    def add_oauth_user(self, email: str, role: str, provider: str) -> None:
+        with self.SessionLocal() as db:
+            existing = db.query(DBUser).filter(DBUser.email == email).first()
+            if existing:
+                return
+            db.add(DBUser(email=email, password_hash="", role=role, auth_provider=provider))
             db.commit()
 
     def fetch_all(self) -> List[Dict]:
@@ -373,7 +411,15 @@ class MockUserAdapter(UserRepositoryPort):
         self.users[email] = {
             "email": email, "role": role, "password_hash": password_hash,
             "full_name": None, "institution": None, "orcid_id": None,
+            "auth_provider": "password",
         }
+
+    def add_oauth_user(self, email: str, role: str, provider: str) -> None:
+        self.users.setdefault(email, {
+            "email": email, "role": role, "password_hash": "",
+            "full_name": None, "institution": None, "orcid_id": None,
+            "auth_provider": provider,
+        })
 
     def fetch_all(self) -> List[Dict]:
         return [{"email": u["email"], "role": u["role"]} for u in self.users.values()]
@@ -458,7 +504,134 @@ class PasswordAuthAdapter(AuthMethodPort):
             return None
         if not self._verify(password, stored):
             return None
-        return {"email": record["email"], "role": record["role"]}
+        return {"email": record["email"], "role": record["role"], "provider": "password"}
+
+
+class GoogleAuthAdapter(OAuthMethodPort):
+    """'Continue with Google' (OAuth 2.0 / OpenID Connect).
+
+    Two steps: build_redirect_url() sends the browser to Google's login page;
+    authenticate() handles the callback — swaps the one-time code for an access
+    token, then fetches the verified email. Returns {email, provider} for the
+    AuthService find-or-create tail. We never see the user's Google password.
+    """
+    name = "google"
+    AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+    TOKEN_URL = "https://oauth2.googleapis.com/token"
+    USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+
+    def __init__(self, client_id: str, client_secret: str, timeout: float = 10.0):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.timeout = timeout
+
+    def build_redirect_url(self, state: str, redirect_uri: str) -> str:
+        from urllib.parse import urlencode
+        params = {
+            "client_id": self.client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "access_type": "online",
+            "prompt": "select_account",
+        }
+        return f"{self.AUTH_URL}?{urlencode(params)}"
+
+    def authenticate(self, credentials: Dict) -> Optional[Dict]:
+        code = credentials.get("code", "")
+        redirect_uri = credentials.get("redirect_uri", "")
+        if not code:
+            return None
+        try:
+            token_resp = httpx.post(self.TOKEN_URL, data={
+                "code": code,
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            }, headers={"Accept": "application/json"}, timeout=self.timeout)
+            token_resp.raise_for_status()
+            access_token = token_resp.json().get("access_token")
+            if not access_token:
+                raise RuntimeError("Google did not return an access token.")
+            info = httpx.get(self.USERINFO_URL, headers={
+                "Authorization": f"Bearer {access_token}",
+            }, timeout=self.timeout)
+            info.raise_for_status()
+            data = info.json()
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"Google sign-in failed: {e}") from e
+
+        email = data.get("email")
+        if not email or not data.get("email_verified", True):
+            raise RuntimeError("Google account has no verified email.")
+        return {"email": email, "provider": "google"}
+
+
+class GitHubAuthAdapter(OAuthMethodPort):
+    """'Continue with GitHub' (OAuth 2.0). Same shape as Google; GitHub may keep
+    the email private, so we fall back to the /user/emails endpoint to find the
+    primary verified address."""
+    name = "github"
+    AUTH_URL = "https://github.com/login/oauth/authorize"
+    TOKEN_URL = "https://github.com/login/oauth/access_token"
+    USER_URL = "https://api.github.com/user"
+    EMAILS_URL = "https://api.github.com/user/emails"
+
+    def __init__(self, client_id: str, client_secret: str, timeout: float = 10.0):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.timeout = timeout
+
+    def build_redirect_url(self, state: str, redirect_uri: str) -> str:
+        from urllib.parse import urlencode
+        params = {
+            "client_id": self.client_id,
+            "redirect_uri": redirect_uri,
+            "scope": "read:user user:email",
+            "state": state,
+        }
+        return f"{self.AUTH_URL}?{urlencode(params)}"
+
+    def authenticate(self, credentials: Dict) -> Optional[Dict]:
+        code = credentials.get("code", "")
+        redirect_uri = credentials.get("redirect_uri", "")
+        if not code:
+            return None
+        try:
+            token_resp = httpx.post(self.TOKEN_URL, data={
+                "code": code,
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "redirect_uri": redirect_uri,
+            }, headers={"Accept": "application/json"}, timeout=self.timeout)
+            token_resp.raise_for_status()
+            access_token = token_resp.json().get("access_token")
+            if not access_token:
+                raise RuntimeError("GitHub did not return an access token.")
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "ELLA-RMS",
+            }
+            email = httpx.get(self.USER_URL, headers=headers, timeout=self.timeout)
+            email.raise_for_status()
+            chosen = email.json().get("email")
+            if not chosen:
+                # primary email is private — ask the emails endpoint
+                emails = httpx.get(self.EMAILS_URL, headers=headers, timeout=self.timeout)
+                emails.raise_for_status()
+                for e in emails.json():
+                    if e.get("primary") and e.get("verified"):
+                        chosen = e.get("email")
+                        break
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"GitHub sign-in failed: {e}") from e
+
+        if not chosen:
+            raise RuntimeError("GitHub account has no usable verified email.")
+        return {"email": chosen, "provider": "github"}
 
 
 # ═══════════════════════════════════════════════════════════════════
